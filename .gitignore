@@ -1,0 +1,30 @@
+# Android / Gradle
+.gradle/
+build/
+**/build/
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+
+# iOS / Xcode
+DerivedData/
+**/.build/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+
+# Secrets / local configuration
+.env
+.env.*

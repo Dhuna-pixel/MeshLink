@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">MeshLink</string>
+    <string name="app_tagline">Infrastructure-Free Multi-Hop Mesh Network</string>
+</resources>
