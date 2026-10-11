@@ -98,7 +98,7 @@ fun HomeScreen(
                 ) {
                     Column {
                         Text(
-                            text = "LOCAL NODE IDENTITY",
+                            text = "LOCAL MESH NODE IDENTITY",
                             style = MaterialTheme.typography.labelSmall,
                             color = TextSecondary
                         )
@@ -137,13 +137,13 @@ fun HomeScreen(
                     NodeStatusBadge(status = uiState.currentNode.status)
 
                     val (modeLabel, modeColor) = when (uiState.transportMode) {
-                        TransportMode.NEARBY_CONNECTIONS -> "Nearby Connections (P2P)" to MeshGreenAccent
-                        TransportMode.BLE_GATT -> "BLE GATT (Cross-Platform)" to MeshCyanPrimary
+                        TransportMode.BLE_GATT -> "BLE GATT + CRC-16" to MeshCyanPrimary
                         TransportMode.SIMULATION -> "3-Node Simulation" to MeshPurpleAccent
+                        TransportMode.NEARBY_CONNECTIONS -> "Nearby Connections" to MeshGreenAccent
                     }
 
                     Text(
-                        text = "Transport: $modeLabel",
+                        text = modeLabel,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = modeColor
@@ -167,7 +167,7 @@ fun HomeScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (uiState.isNetworkingActive) "Stop Networking" else "Start Mesh Networking",
+                        text = if (uiState.isNetworkingActive) "Stop BLE Mesh Networking" else "Start BLE Mesh Networking",
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -180,7 +180,7 @@ fun HomeScreen(
         // TRANSPORT MODE SELECTOR
         // =========================================================================
         Text(
-            text = "Transport Layer Selection",
+            text = "Transport Layer Selection (Review III Target)",
             style = MaterialTheme.typography.titleMedium,
             color = TextPrimary
         )
@@ -193,34 +193,34 @@ fun HomeScreen(
             shape = RoundedCornerShape(16.dp)
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Option 1: Nearby Connections
+                // Option 1: BLE GATT Primary
                 TransportOptionRow(
-                    title = "Google Nearby Connections",
-                    subtitle = "High-speed Android ↔ Android hardware mesh (P2P Cluster)",
-                    icon = Icons.Default.Sensors,
-                    isSelected = uiState.transportMode == TransportMode.NEARBY_CONNECTIONS,
-                    accentColor = MeshGreenAccent,
-                    onClick = { onSelectTransportMode(TransportMode.NEARBY_CONNECTIONS) }
-                )
-
-                // Option 2: BLE GATT Mode
-                TransportOptionRow(
-                    title = "BLE GATT (Android ↔ iOS)",
-                    subtitle = "Cross-platform Bluetooth LE GATT Dual-Role transport",
+                    title = "BLE GATT (Primary Platform)",
+                    subtitle = "Dual-Role Android BLE mesh with CRC-16-CCITT packet integrity",
                     icon = Icons.Default.Bluetooth,
                     isSelected = uiState.transportMode == TransportMode.BLE_GATT,
                     accentColor = MeshCyanPrimary,
                     onClick = { onSelectTransportMode(TransportMode.BLE_GATT) }
                 )
 
-                // Option 3: Simulation Mode
+                // Option 2: Simulation Mode
                 TransportOptionRow(
                     title = "3-Node Virtual Simulation",
-                    subtitle = "In-memory testbed (Node A → Node B Relay → Node C)",
+                    subtitle = "In-memory testbed (Node A → Node B Relay → Node C) with CRC",
                     icon = Icons.Default.PlayCircle,
                     isSelected = uiState.transportMode == TransportMode.SIMULATION,
                     accentColor = MeshPurpleAccent,
                     onClick = { onSelectTransportMode(TransportMode.SIMULATION) }
+                )
+
+                // Option 3: Nearby Connections
+                TransportOptionRow(
+                    title = "Nearby Connections (Legacy)",
+                    subtitle = "Alternative Android P2P transport",
+                    icon = Icons.Default.Sensors,
+                    isSelected = uiState.transportMode == TransportMode.NEARBY_CONNECTIONS,
+                    accentColor = MeshGreenAccent,
+                    onClick = { onSelectTransportMode(TransportMode.NEARBY_CONNECTIONS) }
                 )
             }
         }
@@ -245,7 +245,7 @@ fun HomeScreen(
             MetricCard(
                 title = "Connected",
                 value = uiState.connectedNodes.size.toString(),
-                subtitle = "Active Neighbors",
+                subtitle = "Active BLE Peers",
                 icon = Icons.Default.CastConnected,
                 color = MeshGreenAccent,
                 modifier = Modifier.weight(1f),
@@ -255,7 +255,7 @@ fun HomeScreen(
             MetricCard(
                 title = "Discovered",
                 value = uiState.discoveredNodes.size.toString(),
-                subtitle = "Nearby Devices",
+                subtitle = "Scanned Devices",
                 icon = Icons.Default.Hub,
                 color = MeshCyanPrimary,
                 modifier = Modifier.weight(1f),
@@ -276,7 +276,7 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // =========================================================================
-        // QUICK ACTIONS & REVIEW II DEMO SHORTCUTS
+        // REVIEW III DEMO SHORTCUTS
         // =========================================================================
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -285,15 +285,16 @@ fun HomeScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Review II Demonstration Quick Links",
+                    text = "Review III Demonstration Highlights",
                     style = MaterialTheme.typography.titleMedium,
                     color = TextPrimary
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Multi-hop verification concept: Node A ➔ Node B (Relay) ➔ Node C (Destination).",
+                    text = "1. Multi-Hop: Node A ➔ Node B (Relay) ➔ Node C (Destination).\n2. Integrity: CRC-16-CCITT verified at every link before routing.\n3. Mutation: TTL: 5 ➔ 4 ➔ 3, Hops: 0 ➔ 1 ➔ 2, Route: [A] ➔ [A, B] ➔ [A, B, C].",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
+                    color = TextSecondary,
+                    lineHeight = 20.sp
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -312,7 +313,7 @@ fun HomeScreen(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text("Live Event Log", color = MeshGreenAccent)
+                        Text("Live CRC Event Log", color = MeshGreenAccent)
                     }
                 }
             }

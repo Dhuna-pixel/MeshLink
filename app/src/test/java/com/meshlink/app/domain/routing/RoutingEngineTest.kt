@@ -10,13 +10,16 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Unit tests verifying the 5 core Review II routing requirements:
+ * Unit tests verifying Review III routing semantics:
  *
- * Test 1 — Destination reached (DELIVER)
- * Test 2 — Forward (FORWARD with TTL & Hop Count update)
- * Test 3 — Duplicate detection (DROP_DUPLICATE)
- * Test 4 — TTL expiration (DROP_TTL_EXPIRED)
- * Test 5 — Complete Three-Node multi-hop flow (A -> B -> C)
+ * Test 1 — Direct destination reached (A -> C): Delivered with TTL=4, Hops=1, Route=[A, C]
+ * Test 2 — Intermediate Relay forwarding (A -> B -> C): Relay B updates TTL=4, Hops=1, Route=[A, B]
+ * Test 3 — Complete 3-Node multi-hop flow (A -> B -> C): Final Destination C delivers with TTL=3, Hops=2, Route=[A, B, C]
+ * Test 4 — Two-Relay multi-hop flow (A -> B -> C -> D): Final Destination D delivers with TTL=2, Hops=3, Route=[A, B, C, D]
+ * Test 5 — Duplicate detection (DropDuplicate)
+ * Test 6 — TTL expiration (DropTtlExpired)
+ * Test 7 — Loop avoidance (excludes route history and previous hop)
+ * Test 8 — No route available (DropNoRoute)
  */
 class RoutingEngineTest {
 
@@ -28,53 +31,57 @@ class RoutingEngineTest {
     }
 
     /**
-     * Test 1 — Destination reached
-     * When a packet arrives and packet.destinationId == currentNodeId,
-     * the engine MUST return ForwardingDecision.Deliver.
+     * Test 1 — Direct message from A to C (1 hop link traversal).
+     * Source A creates: TTL = 5, HopCount = 0, Route = [A].
+     * Destination C receives: Delivered with TTL = 4, HopCount = 1, Route = [A, C].
      */
     @Test
-    fun test1_destinationReached_deliversPayload() {
-        val packet = MessagePacket(
-            messageId = "MSG-001",
+    fun test1_directMessage_deliversWithUpdatedHopsAndTtl() {
+        val packetFromA = routingEngine.createLocalPacket(
+            messageId = "MSG-DIRECT-001",
             sourceId = "NODE-A",
+            sourceName = "Node A",
             destinationId = "NODE-C",
-            payload = "Hello Destination Node C",
-            ttl = 5,
-            hopCount = 1,
-            routeHistory = listOf("NODE-A", "NODE-B"),
-            previousHopId = "NODE-B"
+            destinationName = "Node C",
+            payload = "Direct BLE Message",
+            initialTtl = 5
         )
 
         val neighborsOfC = listOf(
-            Node(nodeId = "NODE-B", nodeName = "Node B", status = NodeStatus.CONNECTED)
+            Node(nodeId = "NODE-A", nodeName = "Node A", status = NodeStatus.CONNECTED)
         )
 
-        val decision = routingEngine.processIncomingPacket(
-            packet = packet,
+        val engineC = RoutingEngine()
+        val decision = engineC.processIncomingPacket(
+            packet = packetFromA,
             currentNodeId = "NODE-C",
             connectedNeighbors = neighborsOfC
         )
 
-        assertTrue("Decision should be Deliver", decision is ForwardingDecision.Deliver)
-        val deliverDecision = decision as ForwardingDecision.Deliver
-        assertEquals("NODE-C", deliverDecision.packet.destinationId)
-        assertEquals("Hello Destination Node C", deliverDecision.packet.payload)
+        assertTrue("Decision must be Deliver", decision is ForwardingDecision.Deliver)
+        val delivered = (decision as ForwardingDecision.Deliver).packet
+
+        assertEquals("NODE-A", delivered.sourceId)
+        assertEquals("NODE-C", delivered.destinationId)
+        assertEquals("Direct BLE Message", delivered.payload)
+        assertEquals(4, delivered.ttl)
+        assertEquals(1, delivered.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-C"), delivered.routeHistory)
     }
 
     /**
-     * Test 2 — Forward
-     * When destination != currentNodeId and TTL > 1,
-     * the engine MUST return ForwardingDecision.Forward with:
-     * - TTL decremented (e.g. 5 -> 4)
-     * - hopCount incremented (e.g. 0 -> 1)
-     * - current node appended to routeHistory
+     * Test 2 — Relay Node B processes packet from Node A destined for Node C.
+     * Before B: TTL = 5, HopCount = 0, Route = [A].
+     * After B forwards: TTL = 4, HopCount = 1, Route = [A, B].
      */
     @Test
-    fun test2_relayNode_forwardsPacket_andUpdatesTtlAndHops() {
-        val packet = MessagePacket(
-            messageId = "MSG-002",
+    fun test2_relayNodeB_forwardsPacket_andUpdatesTtlAndHops() {
+        val packetFromA = MessagePacket(
+            messageId = "MSG-RELAY-002",
             sourceId = "NODE-A",
+            sourceName = "Node A",
             destinationId = "NODE-C",
+            destinationName = "Node C",
             payload = "Multi-hop payload",
             ttl = 5,
             hopCount = 0,
@@ -88,15 +95,15 @@ class RoutingEngineTest {
         )
 
         val decision = routingEngine.processIncomingPacket(
-            packet = packet,
+            packet = packetFromA,
             currentNodeId = "NODE-B",
             connectedNeighbors = neighborsOfB
         )
 
-        assertTrue("Decision should be Forward", decision is ForwardingDecision.Forward)
+        assertTrue("Decision must be Forward", decision is ForwardingDecision.Forward)
         val forwardDecision = decision as ForwardingDecision.Forward
 
-        // Verify packet header mutations
+        // Verify packet header mutations for link A -> B
         assertEquals(4, forwardDecision.updatedPacket.ttl)
         assertEquals(1, forwardDecision.updatedPacket.hopCount)
         assertEquals(listOf("NODE-A", "NODE-B"), forwardDecision.updatedPacket.routeHistory)
@@ -107,14 +114,140 @@ class RoutingEngineTest {
     }
 
     /**
-     * Test 3 — Duplicate detection
-     * If the same messageId is received a second time,
-     * the engine MUST return ForwardingDecision.DropDuplicate.
+     * Test 3 — Complete Three-Node multi-hop flow: A -> B -> C.
+     *
+     * 1. Source A: TTL = 5, HopCount = 0, Route = [A]
+     * 2. After A -> B link: Relay B mutates to TTL = 4, HopCount = 1, Route = [A, B] and forwards
+     * 3. After B -> C link: Destination C delivers with TTL = 3, HopCount = 2, Route = [A, B, C]
      */
     @Test
-    fun test3_duplicatePacket_dropped() {
+    fun test3_completeThreeNodeFlow_A_B_C_deliversWithTtl3AndHops2() {
+        val engineA = RoutingEngine()
+        val engineB = RoutingEngine()
+        val engineC = RoutingEngine()
+
+        // 1. Source A creates local packet
+        val packetFromA = engineA.createLocalPacket(
+            messageId = "MSG-FLOW-100",
+            sourceId = "NODE-A",
+            sourceName = "Node A",
+            destinationId = "NODE-C",
+            destinationName = "Node C",
+            payload = "End-to-End MeshLink Multi-Hop Test",
+            initialTtl = 5
+        )
+
+        assertEquals(5, packetFromA.ttl)
+        assertEquals(0, packetFromA.hopCount)
+        assertEquals(listOf("NODE-A"), packetFromA.routeHistory)
+
+        // 2. Node B (Relay) receives from A
+        val neighborsOfB = listOf(
+            Node(nodeId = "NODE-A", nodeName = "Node A", status = NodeStatus.CONNECTED),
+            Node(nodeId = "NODE-C", nodeName = "Node C", status = NodeStatus.CONNECTED)
+        )
+
+        val decisionAtB = engineB.processIncomingPacket(
+            packet = packetFromA,
+            currentNodeId = "NODE-B",
+            connectedNeighbors = neighborsOfB
+        )
+
+        assertTrue("Node B must forward", decisionAtB is ForwardingDecision.Forward)
+        val forwardedPacketByB = (decisionAtB as ForwardingDecision.Forward).updatedPacket
+
+        assertEquals(4, forwardedPacketByB.ttl)
+        assertEquals(1, forwardedPacketByB.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-B"), forwardedPacketByB.routeHistory)
+
+        // 3. Node C (Destination) receives from Node B
+        val neighborsOfC = listOf(
+            Node(nodeId = "NODE-B", nodeName = "Node B", status = NodeStatus.CONNECTED)
+        )
+
+        val decisionAtC = engineC.processIncomingPacket(
+            packet = forwardedPacketByB,
+            currentNodeId = "NODE-C",
+            connectedNeighbors = neighborsOfC
+        )
+
+        assertTrue("Node C must deliver the packet", decisionAtC is ForwardingDecision.Deliver)
+        val deliveredPacket = (decisionAtC as ForwardingDecision.Deliver).packet
+
+        assertEquals("NODE-A", deliveredPacket.sourceId)
+        assertEquals("NODE-C", deliveredPacket.destinationId)
+        assertEquals("End-to-End MeshLink Multi-Hop Test", deliveredPacket.payload)
+        assertEquals(3, deliveredPacket.ttl)
+        assertEquals(2, deliveredPacket.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-B", "NODE-C"), deliveredPacket.routeHistory)
+    }
+
+    /**
+     * Test 4 — Two-Relay multi-hop flow: A -> B -> C -> D.
+     * Expected final D: TTL = 2, HopCount = 3, Route = [A, B, C, D]
+     */
+    @Test
+    fun test4_twoRelayFlow_A_B_C_D_deliversWithTtl2AndHops3() {
+        val engineA = RoutingEngine()
+        val engineB = RoutingEngine()
+        val engineC = RoutingEngine()
+        val engineD = RoutingEngine()
+
+        // 1. Source A
+        val packetA = engineA.createLocalPacket(
+            messageId = "MSG-4NODE-001",
+            sourceId = "NODE-A",
+            sourceName = "Node A",
+            destinationId = "NODE-D",
+            destinationName = "Node D",
+            payload = "4-Node 2-Relay Test",
+            initialTtl = 5
+        )
+
+        // 2. Relay B
+        val decisionB = engineB.processIncomingPacket(
+            packet = packetA,
+            currentNodeId = "NODE-B",
+            connectedNeighbors = listOf(Node("NODE-A"), Node("NODE-C"))
+        )
+        assertTrue(decisionB is ForwardingDecision.Forward)
+        val packetB = (decisionB as ForwardingDecision.Forward).updatedPacket
+        assertEquals(4, packetB.ttl)
+        assertEquals(1, packetB.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-B"), packetB.routeHistory)
+
+        // 3. Relay C
+        val decisionC = engineC.processIncomingPacket(
+            packet = packetB,
+            currentNodeId = "NODE-C",
+            connectedNeighbors = listOf(Node("NODE-B"), Node("NODE-D"))
+        )
+        assertTrue(decisionC is ForwardingDecision.Forward)
+        val packetC = (decisionC as ForwardingDecision.Forward).updatedPacket
+        assertEquals(3, packetC.ttl)
+        assertEquals(2, packetC.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-B", "NODE-C"), packetC.routeHistory)
+
+        // 4. Destination D
+        val decisionD = engineD.processIncomingPacket(
+            packet = packetC,
+            currentNodeId = "NODE-D",
+            connectedNeighbors = listOf(Node("NODE-C"))
+        )
+        assertTrue(decisionD is ForwardingDecision.Deliver)
+        val delivered = (decisionD as ForwardingDecision.Deliver).packet
+        assertEquals(2, delivered.ttl)
+        assertEquals(3, delivered.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-B", "NODE-C", "NODE-D"), delivered.routeHistory)
+    }
+
+    /**
+     * Test 5 — Duplicate detection.
+     */
+    @Test
+    fun test5_duplicatePacket_dropped() {
         val packet = MessagePacket(
-            messageId = "MSG-003",
+            messageId = "MSG-DUP-005",
             sourceId = "NODE-A",
             destinationId = "NODE-C",
             payload = "Duplicate test payload",
@@ -128,7 +261,6 @@ class RoutingEngineTest {
             Node(nodeId = "NODE-C", nodeName = "Node C", status = NodeStatus.CONNECTED)
         )
 
-        // First processing -> Should forward
         val firstDecision = routingEngine.processIncomingPacket(
             packet = packet,
             currentNodeId = "NODE-B",
@@ -136,7 +268,6 @@ class RoutingEngineTest {
         )
         assertTrue(firstDecision is ForwardingDecision.Forward)
 
-        // Second processing with identical messageId -> Must be dropped as duplicate
         val secondDecision = routingEngine.processIncomingPacket(
             packet = packet,
             currentNodeId = "NODE-B",
@@ -146,18 +277,16 @@ class RoutingEngineTest {
     }
 
     /**
-     * Test 4 — TTL expired
-     * When TTL <= 1, forwarding would exceed hop limit,
-     * the engine MUST return ForwardingDecision.DropTtlExpired.
+     * Test 6 — TTL expired.
      */
     @Test
-    fun test4_expiredTtl_dropped() {
+    fun test6_expiredTtl_dropped() {
         val packetWithTtl1 = MessagePacket(
-            messageId = "MSG-004",
+            messageId = "MSG-EXP-006",
             sourceId = "NODE-A",
             destinationId = "NODE-C",
             payload = "Expired test payload",
-            ttl = 1, // TTL = 1 cannot be forwarded further
+            ttl = 1,
             hopCount = 4,
             routeHistory = listOf("NODE-A", "NODE-X", "NODE-Y", "NODE-Z"),
             previousHopId = "NODE-Z"
@@ -177,84 +306,12 @@ class RoutingEngineTest {
     }
 
     /**
-     * Test 5 — Complete Three-Node multi-hop flow (A -> B -> C)
-     * Simulates end-to-end:
-     * 1. Node A creates packet for Node C
-     * 2. Node B (Relay) processes and forwards to Node C
-     * 3. Node C (Destination) receives and delivers
+     * Test 7 — Loop Avoidance.
      */
     @Test
-    fun test5_threeNodeMultiHopFlow_success() {
-        val engineA = RoutingEngine()
-        val engineB = RoutingEngine()
-        val engineC = RoutingEngine()
-
-        // 1. Node A creates local packet
-        val packetFromA = engineA.createLocalPacket(
-            messageId = "MSG-FLOW-100",
-            sourceId = "NODE-A",
-            sourceName = "Node A",
-            destinationId = "NODE-C",
-            destinationName = "Node C",
-            payload = "End-to-End MeshLink Test",
-            initialTtl = 5
-        )
-
-        assertEquals("NODE-A", packetFromA.sourceId)
-        assertEquals("NODE-C", packetFromA.destinationId)
-        assertEquals(5, packetFromA.ttl)
-        assertEquals(0, packetFromA.hopCount)
-        assertEquals(listOf("NODE-A"), packetFromA.routeHistory)
-
-        // 2. Node B (Relay) receives packet from Node A
-        val neighborsOfB = listOf(
-            Node(nodeId = "NODE-A", nodeName = "Node A", status = NodeStatus.CONNECTED),
-            Node(nodeId = "NODE-C", nodeName = "Node C", status = NodeStatus.CONNECTED)
-        )
-
-        val decisionAtB = engineB.processIncomingPacket(
-            packet = packetFromA,
-            currentNodeId = "NODE-B",
-            connectedNeighbors = neighborsOfB
-        )
-
-        assertTrue("Node B must forward the packet", decisionAtB is ForwardingDecision.Forward)
-        val forwardedPacketByB = (decisionAtB as ForwardingDecision.Forward).updatedPacket
-
-        assertEquals(4, forwardedPacketByB.ttl)
-        assertEquals(1, forwardedPacketByB.hopCount)
-        assertEquals(listOf("NODE-A", "NODE-B"), forwardedPacketByB.routeHistory)
-
-        // 3. Node C (Destination) receives forwarded packet from Node B
-        val neighborsOfC = listOf(
-            Node(nodeId = "NODE-B", nodeName = "Node B", status = NodeStatus.CONNECTED)
-        )
-
-        val decisionAtC = engineC.processIncomingPacket(
-            packet = forwardedPacketByB,
-            currentNodeId = "NODE-C",
-            connectedNeighbors = neighborsOfC
-        )
-
-        assertTrue("Node C must deliver the packet", decisionAtC is ForwardingDecision.Deliver)
-        val deliveredPacket = (decisionAtC as ForwardingDecision.Deliver).packet
-
-        assertEquals("NODE-A", deliveredPacket.sourceId)
-        assertEquals("NODE-C", deliveredPacket.destinationId)
-        assertEquals("End-to-End MeshLink Test", deliveredPacket.payload)
-        assertEquals(1, deliveredPacket.hopCount)
-        assertEquals(4, deliveredPacket.ttl)
-        assertEquals(listOf("NODE-A", "NODE-B"), deliveredPacket.routeHistory)
-    }
-
-    /**
-     * Test 6 — Loop Avoidance
-     * Verifies that neighbors already in route history are excluded from candidate next hops.
-     */
-    @Test
-    fun test6_loopAvoidance_excludesRouteHistoryAndPreviousHop() {
+    fun test7_loopAvoidance_excludesRouteHistoryAndPreviousHop() {
         val packet = MessagePacket(
-            messageId = "MSG-006",
+            messageId = "MSG-LOOP-007",
             sourceId = "NODE-A",
             destinationId = "NODE-D",
             payload = "Loop test",
@@ -264,7 +321,6 @@ class RoutingEngineTest {
             previousHopId = "NODE-X"
         )
 
-        // Node B has connected neighbors: Node A (in history), Node X (previous hop), Node Y (new valid neighbor)
         val neighborsOfB = listOf(
             Node(nodeId = "NODE-A", nodeName = "Node A", status = NodeStatus.CONNECTED),
             Node(nodeId = "NODE-X", nodeName = "Node X", status = NodeStatus.CONNECTED),
@@ -283,13 +339,12 @@ class RoutingEngineTest {
     }
 
     /**
-     * Test 7 — No route available
-     * When no valid unvisited connected neighbors exist, engine returns DropNoRoute.
+     * Test 8 — No route available.
      */
     @Test
-    fun test7_noRouteAvailable_returnsDropNoRoute() {
+    fun test8_noRouteAvailable_returnsDropNoRoute() {
         val packet = MessagePacket(
-            messageId = "MSG-007",
+            messageId = "MSG-NOROUTE-008",
             sourceId = "NODE-A",
             destinationId = "NODE-C",
             payload = "Dead end test",
@@ -299,7 +354,6 @@ class RoutingEngineTest {
             previousHopId = "NODE-A"
         )
 
-        // Only neighbor is Node A (previous hop)
         val neighborsOfB = listOf(
             Node(nodeId = "NODE-A", nodeName = "Node A", status = NodeStatus.CONNECTED)
         )
@@ -311,5 +365,156 @@ class RoutingEngineTest {
         )
 
         assertTrue("Should drop when no next hop is available", decision is ForwardingDecision.DropNoRoute)
+    }
+
+    /**
+     * Test 9 — Exact Physical BLE Relay Sequence Reproducer:
+     * Message ID: MSG-B43572
+     * Pipeline: Node A (Source) -> Node B (Relay) -> Node C (Destination)
+     *
+     * Verifies:
+     * 1. Node A creates local packet: TTL=5, Hop=0, RouteHistory=[NODE-A]
+     * 2. Node A encodes wire frame with CRC-16-CCITT
+     * 3. Node B receives wire frame, validates CRC-16, parses packet
+     * 4. Node B RoutingEngine mutates packet for A->B link: TTL=4, Hop=1, RouteHistory=[NODE-A, NODE-B]
+     * 5. Node B encodes updated packet into wire frame with fresh CRC-16
+     * 6. Node C receives wire frame from B, validates CRC-16, parses packet containing B's mutated state
+     * 7. Node C RoutingEngine mutates packet for B->C link before destination delivery: TTL=3, Hop=2, RouteHistory=[NODE-A, NODE-B, NODE-C]
+     * 8. Destination check matches Node C -> Deliver decision with exact state (TTL=3, Hop=2, RouteHistory=[NODE-A, NODE-B, NODE-C])
+     * 9. Confirms no double mutation and no skipped incoming-link mutation.
+     */
+    @Test
+    fun test9_physicalBleRelayExactSequence_A_B_C_MSG_B43572() {
+        val engineA = RoutingEngine()
+        val engineB = RoutingEngine()
+        val engineC = RoutingEngine()
+
+        val messageId = "MSG-B43572"
+        val payloadText = "Physical BLE Relay Verification Payload"
+
+        // -------------------------------------------------------------
+        // Step 1: Node A creates local packet
+        // -------------------------------------------------------------
+        val packetAtA = engineA.createLocalPacket(
+            messageId = messageId,
+            sourceId = "NODE-A",
+            sourceName = "Node A",
+            destinationId = "NODE-C",
+            destinationName = "Node C",
+            payload = payloadText,
+            initialTtl = 5
+        )
+
+        assertEquals("MSG-B43572", packetAtA.messageId)
+        assertEquals(5, packetAtA.ttl)
+        assertEquals(0, packetAtA.hopCount)
+        assertEquals(listOf("NODE-A"), packetAtA.routeHistory)
+        assertEquals("NODE-A", packetAtA.previousHopId)
+
+        // -------------------------------------------------------------
+        // Step 2: Node A encodes wire frame for Link A -> B
+        // -------------------------------------------------------------
+        val jsonFromA = com.meshlink.app.utils.JsonSerializer.packetToJson(packetAtA)
+        val wireFrameAtoB = com.meshlink.app.data.transport.framing.MeshLinkFrame.encode(
+            frameType = com.meshlink.app.data.transport.framing.MeshLinkFrame.FRAME_TYPE_ROUTED_PACKET,
+            payload = jsonFromA.toByteArray(java.nio.charset.StandardCharsets.UTF_8)
+        )
+
+        // -------------------------------------------------------------
+        // Step 3: Node B receives wire frame and validates CRC-16
+        // -------------------------------------------------------------
+        val reassemblerB = com.meshlink.app.data.transport.framing.FrameReassembler()
+        val resultsB = reassemblerB.processChunk(wireFrameAtoB)
+        assertEquals(1, resultsB.size)
+        assertTrue("Node B must validate CRC successfully", resultsB[0] is com.meshlink.app.data.transport.framing.MeshLinkFrame.FrameResult.Success)
+
+        val successB = resultsB[0] as com.meshlink.app.data.transport.framing.MeshLinkFrame.FrameResult.Success
+        val parsedPacketAtB = com.meshlink.app.utils.JsonSerializer.jsonToPacket(
+            String(successB.payload, java.nio.charset.StandardCharsets.UTF_8)
+        )
+        org.junit.Assert.assertNotNull(parsedPacketAtB)
+
+        // -------------------------------------------------------------
+        // Step 4: Node B RoutingEngine processes incoming packet (Link A -> B)
+        // -------------------------------------------------------------
+        val neighborsOfB = listOf(
+            Node(nodeId = "NODE-A", nodeName = "Node A", status = NodeStatus.CONNECTED),
+            Node(nodeId = "NODE-C", nodeName = "Node C", status = NodeStatus.CONNECTED)
+        )
+        val decisionAtB = engineB.processIncomingPacket(
+            packet = parsedPacketAtB!!,
+            currentNodeId = "NODE-B",
+            connectedNeighbors = neighborsOfB
+        )
+
+        assertTrue("Node B decision must be Forward", decisionAtB is ForwardingDecision.Forward)
+        val forwardDecision = decisionAtB as ForwardingDecision.Forward
+        val packetForwardedByB = forwardDecision.updatedPacket
+
+        // Verify Node B mutated state
+        assertEquals("MSG-B43572", packetForwardedByB.messageId)
+        assertEquals("NODE-A", packetForwardedByB.sourceId)
+        assertEquals("NODE-C", packetForwardedByB.destinationId)
+        assertEquals(4, packetForwardedByB.ttl)
+        assertEquals(1, packetForwardedByB.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-B"), packetForwardedByB.routeHistory)
+        assertEquals("NODE-B", packetForwardedByB.previousHopId)
+        assertEquals(listOf("NODE-C"), forwardDecision.candidateNextHopNodeIds)
+
+        // -------------------------------------------------------------
+        // Step 5: Node B encodes forwarded packet into wire frame for Link B -> C
+        // -------------------------------------------------------------
+        val jsonFromB = com.meshlink.app.utils.JsonSerializer.packetToJson(packetForwardedByB)
+        val wireFrameBtoC = com.meshlink.app.data.transport.framing.MeshLinkFrame.encode(
+            frameType = com.meshlink.app.data.transport.framing.MeshLinkFrame.FRAME_TYPE_ROUTED_PACKET,
+            payload = jsonFromB.toByteArray(java.nio.charset.StandardCharsets.UTF_8)
+        )
+
+        // -------------------------------------------------------------
+        // Step 6: Node C receives wire frame and validates CRC-16
+        // -------------------------------------------------------------
+        val reassemblerC = com.meshlink.app.data.transport.framing.FrameReassembler()
+        val resultsC = reassemblerC.processChunk(wireFrameBtoC)
+        assertEquals(1, resultsC.size)
+        assertTrue("Node C must validate CRC successfully", resultsC[0] is com.meshlink.app.data.transport.framing.MeshLinkFrame.FrameResult.Success)
+
+        val successC = resultsC[0] as com.meshlink.app.data.transport.framing.MeshLinkFrame.FrameResult.Success
+        val parsedPacketAtC = com.meshlink.app.utils.JsonSerializer.jsonToPacket(
+            String(successC.payload, java.nio.charset.StandardCharsets.UTF_8)
+        )
+        org.junit.Assert.assertNotNull(parsedPacketAtC)
+
+        // Confirm incoming wire packet at C has B's state: TTL=4, Hop=1, Route=[NODE-A, NODE-B]
+        assertEquals(4, parsedPacketAtC!!.ttl)
+        assertEquals(1, parsedPacketAtC.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-B"), parsedPacketAtC.routeHistory)
+
+        // -------------------------------------------------------------
+        // Step 7: Node C RoutingEngine processes incoming packet (Link B -> C)
+        // -------------------------------------------------------------
+        val neighborsOfC = listOf(
+            Node(nodeId = "NODE-B", nodeName = "Node B", status = NodeStatus.CONNECTED)
+        )
+        val decisionAtC = engineC.processIncomingPacket(
+            packet = parsedPacketAtC,
+            currentNodeId = "NODE-C",
+            connectedNeighbors = neighborsOfC
+        )
+
+        // -------------------------------------------------------------
+        // Step 8: Node C delivers packet with final state
+        // -------------------------------------------------------------
+        assertTrue("Node C decision must be Deliver", decisionAtC is ForwardingDecision.Deliver)
+        val deliveredPacketAtC = (decisionAtC as ForwardingDecision.Deliver).packet
+
+        // Verify exact final delivered metrics at Node C
+        assertEquals("MSG-B43572", deliveredPacketAtC.messageId)
+        assertEquals("NODE-A", deliveredPacketAtC.sourceId)
+        assertEquals("NODE-C", deliveredPacketAtC.destinationId)
+        assertEquals(payloadText, deliveredPacketAtC.payload)
+        assertEquals(3, deliveredPacketAtC.ttl)
+        assertEquals(2, deliveredPacketAtC.hopCount)
+        assertEquals(listOf("NODE-A", "NODE-B", "NODE-C"), deliveredPacketAtC.routeHistory)
+        assertEquals("NODE-C", deliveredPacketAtC.previousHopId)
     }
 }

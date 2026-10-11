@@ -16,6 +16,8 @@ import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
+import com.meshlink.app.data.transport.framing.MeshLinkFrame
+import com.meshlink.app.domain.crc.Crc16Ccitt
 import com.meshlink.app.domain.models.LogLevel
 import com.meshlink.app.domain.models.MessagePacket
 import com.meshlink.app.domain.models.NetworkLogEntry
@@ -32,7 +34,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Production-ready implementation of [MeshTransport] using Google Play Services Nearby Connections API.
@@ -71,6 +75,13 @@ class NearbyConnectionsTransport(
     // Node ID -> Endpoint ID mapping
     private val nodeToEndpointMap = ConcurrentHashMap<String, String>()
 
+    // Test mode: Intentionally corrupt the next outgoing frame's CRC
+    private val corruptNextFrame = AtomicBoolean(false)
+
+    fun setCorruptNextFrame(corrupt: Boolean) {
+        corruptNextFrame.set(corrupt)
+    }
+
     // =========================================================================
     // PAYLOAD CALLBACK (Receiving data packets from peers)
     // =========================================================================
@@ -78,23 +89,67 @@ class NearbyConnectionsTransport(
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             if (payload.type == Payload.Type.BYTES) {
                 val bytes = payload.asBytes() ?: return
-                val packet = JsonSerializer.bytesToPacket(bytes)
-                if (packet != null) {
-                    val senderNode = endpointToNodeMap[endpointId]
-                    emitLog(
-                        tag = "TRANSPORT",
-                        message = "Received packet '${packet.messageId}' via endpoint '$endpointId' (${senderNode?.nodeName ?: "Unknown"})",
-                        level = LogLevel.INFO,
-                        packetSummary = packet.getSummary(),
-                        nodeId = packet.sourceId
-                    )
-                    emitEvent(TransportEvent.PacketReceived(packet, endpointId))
-                } else {
-                    emitLog(
-                        tag = "TRANSPORT",
-                        message = "Received malformed or unrecognized byte payload from endpoint '$endpointId'",
-                        level = LogLevel.WARNING
-                    )
+                val decodeResult = MeshLinkFrame.decode(bytes)
+
+                when (decodeResult) {
+                    is MeshLinkFrame.FrameResult.Success -> {
+                        val jsonStr = String(decodeResult.payload, StandardCharsets.UTF_8)
+                        val packet = JsonSerializer.jsonToPacket(jsonStr)
+                        if (packet != null) {
+                            val crcHex = Crc16Ccitt.formatHex(decodeResult.crc)
+                            val senderNode = endpointToNodeMap[endpointId]
+                            emitLog(
+                                tag = "CRC-PASS",
+                                message = "INFO [CRC][PASS] messageId=${packet.messageId} received=$crcHex calculated=$crcHex length=${decodeResult.payload.size}B via endpoint '$endpointId' (${senderNode?.nodeName ?: "Unknown"})",
+                                level = LogLevel.SUCCESS,
+                                packetSummary = packet.getSummary(),
+                                nodeId = packet.sourceId
+                            )
+                            emitEvent(TransportEvent.PacketReceived(packet, endpointId))
+                        } else {
+                            emitLog(
+                                tag = "TRANSPORT",
+                                message = "Failed to deserialize JSON packet after CRC pass from endpoint '$endpointId'",
+                                level = LogLevel.ERROR
+                            )
+                        }
+                    }
+
+                    is MeshLinkFrame.FrameResult.CrcError -> {
+                        val rxHex = Crc16Ccitt.formatHex(decodeResult.receivedCrc)
+                        val calcHex = Crc16Ccitt.formatHex(decodeResult.calculatedCrc)
+                        val senderNode = endpointToNodeMap[endpointId]
+
+                        // REJECT FRAME: Discard completely and DO NOT forward to RoutingEngine or SeenMessageManager
+                        emitLog(
+                            tag = "CRC-FAIL",
+                            message = "WARN [CRC][FAIL] Frame Corrupted! received=$rxHex calculated=$calcHex length=${decodeResult.payloadLength}B endpoint=$endpointId (${senderNode?.nodeName ?: "Unknown"}). Packet DROPPED before routing.",
+                            level = LogLevel.ERROR,
+                            nodeId = senderNode?.nodeId
+                        )
+                    }
+
+                    is MeshLinkFrame.FrameResult.CorruptedHeader -> {
+                        // Fallback check for raw un-framed JSON bytes from legacy nodes
+                        val fallbackPacket = JsonSerializer.bytesToPacket(bytes)
+                        if (fallbackPacket != null) {
+                            val senderNode = endpointToNodeMap[endpointId]
+                            emitLog(
+                                tag = "TRANSPORT",
+                                message = "Received un-framed legacy packet '${fallbackPacket.messageId}' via endpoint '$endpointId'",
+                                level = LogLevel.INFO,
+                                packetSummary = fallbackPacket.getSummary(),
+                                nodeId = fallbackPacket.sourceId
+                            )
+                            emitEvent(TransportEvent.PacketReceived(fallbackPacket, endpointId))
+                        } else {
+                            emitLog(
+                                tag = "FRAME-ERROR",
+                                message = "WARN [FRAME][HEADER_ERROR] ${decodeResult.reason} on endpoint '$endpointId'",
+                                level = LogLevel.WARNING
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -377,10 +432,26 @@ class NearbyConnectionsTransport(
     override fun sendPacket(packet: MessagePacket, targetEndpointId: String): Boolean {
         // Check if targetEndpointId is a nodeId, and resolve to actual endpointId
         val resolvedEndpointId = nodeToEndpointMap[targetEndpointId] ?: targetEndpointId
-        val bytes = JsonSerializer.packetToBytes(packet)
-        val payload = Payload.fromBytes(bytes)
+        val jsonStr = JsonSerializer.packetToJson(packet)
+        val payloadBytes = jsonStr.toByteArray(StandardCharsets.UTF_8)
+
+        val shouldCorrupt = corruptNextFrame.getAndSet(false)
+        val framedBytes = MeshLinkFrame.encode(
+            frameType = MeshLinkFrame.FRAME_TYPE_ROUTED_PACKET,
+            payload = payloadBytes,
+            corruptForTesting = shouldCorrupt
+        )
+        val computedCrc = Crc16Ccitt.compute(framedBytes, 0, framedBytes.size - MeshLinkFrame.CRC_SIZE)
+        val payload = Payload.fromBytes(framedBytes)
 
         return try {
+            emitLog(
+                tag = "TRANSPORT",
+                message = "Sending frame to '$resolvedEndpointId' (CRC: ${Crc16Ccitt.formatHex(computedCrc)}, Size: ${framedBytes.size}B, Corrupted: $shouldCorrupt)",
+                level = if (shouldCorrupt) LogLevel.WARNING else LogLevel.INFO,
+                packetSummary = packet.getSummary(),
+                nodeId = packet.destinationId
+            )
             connectionsClient.sendPayload(resolvedEndpointId, payload)
                 .addOnSuccessListener {
                     emitEvent(TransportEvent.PacketSent(packet, resolvedEndpointId))
@@ -416,10 +487,25 @@ class NearbyConnectionsTransport(
             return 0
         }
 
-        val bytes = JsonSerializer.packetToBytes(packet)
-        val payload = Payload.fromBytes(bytes)
+        val jsonStr = JsonSerializer.packetToJson(packet)
+        val payloadBytes = jsonStr.toByteArray(StandardCharsets.UTF_8)
+
+        val shouldCorrupt = corruptNextFrame.getAndSet(false)
+        val framedBytes = MeshLinkFrame.encode(
+            frameType = MeshLinkFrame.FRAME_TYPE_ROUTED_PACKET,
+            payload = payloadBytes,
+            corruptForTesting = shouldCorrupt
+        )
+        val computedCrc = Crc16Ccitt.compute(framedBytes, 0, framedBytes.size - MeshLinkFrame.CRC_SIZE)
+        val payload = Payload.fromBytes(framedBytes)
 
         try {
+            emitLog(
+                tag = "TRANSPORT",
+                message = "Broadcasting frame to ${targets.size} peer(s) (CRC: ${Crc16Ccitt.formatHex(computedCrc)}, Size: ${framedBytes.size}B, Corrupted: $shouldCorrupt)",
+                level = if (shouldCorrupt) LogLevel.WARNING else LogLevel.INFO,
+                packetSummary = packet.getSummary()
+            )
             connectionsClient.sendPayload(targets.toList(), payload)
                 .addOnSuccessListener {
                     emitEvent(TransportEvent.PacketSent(packet, targets.joinToString()))

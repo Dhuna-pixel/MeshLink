@@ -27,22 +27,21 @@ import kotlinx.coroutines.launch
  * Transport execution modes supported by MeshLink.
  */
 enum class TransportMode {
-    /** Google Play Services Nearby Connections (Android-to-Android hardware mesh) */
-    NEARBY_CONNECTIONS,
-
-    /** Real Bluetooth Low Energy GATT Dual-Role mesh (Android-to-iOS cross-platform hardware) */
+    /** Primary Review III Transport: Hardware BLE GATT Dual-Role mesh */
     BLE_GATT,
 
-    /** High-fidelity virtual 3-node simulation (In-process testbed) */
-    SIMULATION
+    /** High-fidelity virtual 3-node simulation testbed */
+    SIMULATION,
+
+    /** Google Play Services Nearby Connections */
+    NEARBY_CONNECTIONS
 }
 
 /**
  * Central repository managing the MeshLink node state, network discovery, message routing,
  * and event logging.
  *
- * Coordinates between the [RoutingEngine] (pure domain logic) and the active [MeshTransport]
- * (hardware Nearby Connections, hardware BLE GATT, or high-fidelity Simulation).
+ * Coordinates between the [RoutingEngine] (pure domain logic) and the active [MeshTransport].
  */
 class MeshRepository(
     private val context: Context,
@@ -51,17 +50,17 @@ class MeshRepository(
     private val repositoryScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     // Transports
-    private val nearbyTransport: NearbyConnectionsTransport by lazy {
-        NearbyConnectionsTransport(context)
-    }
-    private val bleTransport: AndroidBleGattTransport by lazy {
+    val bleTransport: AndroidBleGattTransport by lazy {
         AndroidBleGattTransport(context)
     }
-    private val simulationTransport: SimulationTransport by lazy {
+    val simulationTransport: SimulationTransport by lazy {
         SimulationTransport()
     }
+    val nearbyTransport: NearbyConnectionsTransport by lazy {
+        NearbyConnectionsTransport(context)
+    }
 
-    private var activeTransport: MeshTransport = nearbyTransport
+    private var activeTransport: MeshTransport = bleTransport
 
     // =========================================================================
     // STATE FLOWS
@@ -90,7 +89,8 @@ class MeshRepository(
     private val _isNetworkingActive = MutableStateFlow(false)
     val isNetworkingActive: StateFlow<Boolean> = _isNetworkingActive.asStateFlow()
 
-    private val _transportMode = MutableStateFlow(TransportMode.NEARBY_CONNECTIONS)
+    // Default transport is BLE GATT for Review III
+    private val _transportMode = MutableStateFlow(TransportMode.BLE_GATT)
     val transportMode: StateFlow<TransportMode> = _transportMode.asStateFlow()
 
     val isSimulationMode: StateFlow<Boolean> = MutableStateFlow(false).apply {
@@ -104,18 +104,18 @@ class MeshRepository(
     init {
         // Collect transport events from all transports in background coroutines
         repositoryScope.launch {
-            nearbyTransport.events.collect { handleTransportEvent(it) }
-        }
-        repositoryScope.launch {
             bleTransport.events.collect { handleTransportEvent(it) }
         }
         repositoryScope.launch {
             simulationTransport.events.collect { handleTransportEvent(it) }
         }
+        repositoryScope.launch {
+            nearbyTransport.events.collect { handleTransportEvent(it) }
+        }
 
         log(
             tag = "INIT",
-            message = "MeshLink node initialized with ID '${_currentNode.value.nodeId}' (${_currentNode.value.nodeName})",
+            message = "MeshLink Review III initialized with ID '${_currentNode.value.nodeId}' (${_currentNode.value.nodeName}) | Primary Transport: BLE GATT with CRC-16-CCITT Integrity",
             level = LogLevel.INFO
         )
     }
@@ -149,6 +149,20 @@ class MeshRepository(
     }
 
     // =========================================================================
+    // CRC ERROR INJECTION TEST CONTROL
+    // =========================================================================
+    fun triggerCrcErrorSimulation(corrupt: Boolean = true) {
+        bleTransport.setCorruptNextCrc(corrupt)
+        simulationTransport.setCorruptNextFrame(corrupt)
+        nearbyTransport.setCorruptNextFrame(corrupt)
+        log(
+            tag = "TEST-MODE",
+            message = if (corrupt) "CRC Error Simulation ARMED: Next frame will have corrupted payload." else "CRC Error Simulation disarmed.",
+            level = if (corrupt) LogLevel.WARNING else LogLevel.INFO
+        )
+    }
+
+    // =========================================================================
     // TRANSPORT SELECTION & NETWORKING LIFECYCLE
     // =========================================================================
     fun setTransportMode(mode: TransportMode) {
@@ -170,9 +184,9 @@ class MeshRepository(
     fun startNetworking(mode: TransportMode) {
         _transportMode.value = mode
         activeTransport = when (mode) {
-            TransportMode.NEARBY_CONNECTIONS -> nearbyTransport
             TransportMode.BLE_GATT -> bleTransport
             TransportMode.SIMULATION -> simulationTransport
+            TransportMode.NEARBY_CONNECTIONS -> nearbyTransport
         }
 
         _isNetworkingActive.value = true
@@ -221,18 +235,15 @@ class MeshRepository(
     }
 
     fun startMesh(simulation: Boolean = false) = startNetworking(simulation)
-
     fun stopMesh() = stopNetworking()
-
     fun connectToNeighbor(targetNode: Node) = connectToNode(targetNode)
-
     fun disconnectNeighbor(nodeId: String) = disconnectNode(nodeId)
 
     private fun getTransportModeDescription(mode: TransportMode): String {
         return when (mode) {
-            TransportMode.NEARBY_CONNECTIONS -> "NEARBY CONNECTIONS (Android ↔ Android)"
-            TransportMode.BLE_GATT -> "BLE GATT (Android ↔ iOS Cross-Platform)"
-            TransportMode.SIMULATION -> "3-NODE SIMULATION"
+            TransportMode.BLE_GATT -> "BLE GATT (Dual-Role Android Mesh + CRC-16 Integrity)"
+            TransportMode.SIMULATION -> "3-NODE VIRTUAL SIMULATION (A -> B -> C)"
+            TransportMode.NEARBY_CONNECTIONS -> "NEARBY CONNECTIONS"
         }
     }
 
@@ -263,28 +274,25 @@ class MeshRepository(
 
         log(
             tag = "SEND [LOCAL]",
-            message = "Created message '$messageId' for destination '$destinationId' with TTL $ttl",
+            message = "Created message '$messageId' for destination '$destinationId' with initial TTL $ttl (Hops: 0, Route: [${current.nodeId}])",
             level = LogLevel.INFO,
             packetSummary = packet.getSummary(),
             nodeId = destinationId
         )
 
-        // Transmit via active transport
         val connectedNeighbors = _connectedNodes.value
-
-        // Check if destination is direct neighbor, or broadcast to connected neighbors
         val directNeighbor = connectedNeighbors.find { it.nodeId.equals(destinationId, ignoreCase = true) }
         if (directNeighbor?.endpointId != null) {
             log(
                 tag = "SEND [DIRECT]",
-                message = "Destination '$destinationId' is directly connected. Sending packet directly.",
+                message = "Destination '$destinationId' is directly connected neighbor. Transmitting frame via BLE GATT...",
                 level = LogLevel.INFO
             )
             activeTransport.sendPacket(packet, directNeighbor.endpointId)
         } else {
             log(
                 tag = "SEND [RELAY-OUT]",
-                message = "Broadcasting packet '$messageId' to ${connectedNeighbors.size} connected neighbor(s) for mesh forwarding...",
+                message = "Broadcasting packet '$messageId' to ${connectedNeighbors.size} connected neighbor(s) for multi-hop mesh forwarding...",
                 level = LogLevel.INFO
             )
             activeTransport.broadcastPacket(packet)
@@ -294,19 +302,19 @@ class MeshRepository(
     }
 
     // =========================================================================
-    // INCOMING PACKET PROCESSING (Core of multi-hop relay logic)
+    // INCOMING PACKET PROCESSING (Pure Domain Routing Execution)
     // =========================================================================
     private fun handleIncomingPacket(packet: MessagePacket, fromEndpointId: String) {
         val current = _currentNode.value
 
         log(
             tag = "ROUTING-IN",
-            message = "Processing packet '${packet.messageId}' (Source: ${packet.sourceId}, Dst: ${packet.destinationId}, TTL: ${packet.ttl}, Hops: ${packet.hopCount})",
+            message = "Processing incoming packet '${packet.messageId}' from [$fromEndpointId] (Src: ${packet.sourceId}, Dst: ${packet.destinationId}, Incoming TTL: ${packet.ttl}, Incoming Hops: ${packet.hopCount})",
             level = LogLevel.INFO,
             packetSummary = packet.getSummary()
         )
 
-        // Evaluate forwarding decision via RoutingEngine
+        // Evaluate forwarding decision via pure RoutingEngine
         val decision = routingEngine.processIncomingPacket(
             packet = packet,
             currentNodeId = current.nodeId,
@@ -315,14 +323,15 @@ class MeshRepository(
 
         when (decision) {
             is ForwardingDecision.Deliver -> {
-                // Current node IS the destination
-                _messages.update { listOf(decision.packet) + it }
+                // Current node IS the destination!
+                val delivered = decision.packet
+                _messages.update { listOf(delivered) + it }
                 log(
                     tag = "DELIVER [DEST]",
-                    message = "MESSAGE DELIVERED! Current node '${current.nodeId}' is the intended destination.\nPayload: \"${decision.packet.payload}\"\nTotal Hops: ${decision.packet.hopCount}\nRoute: ${decision.packet.routeHistory.joinToString(" -> ")} -> ${current.nodeId}",
+                    message = "MESSAGE DELIVERED! Current node '${current.nodeId}' is the final destination.\nPayload: \"${delivered.payload}\"\nFinal TTL: ${delivered.ttl}\nFinal Hop Count: ${delivered.hopCount}\nComplete Route: ${delivered.routeHistory.joinToString(" -> ")}",
                     level = LogLevel.SUCCESS,
-                    packetSummary = decision.packet.getSummary(),
-                    nodeId = decision.packet.sourceId
+                    packetSummary = delivered.getSummary(),
+                    nodeId = delivered.sourceId
                 )
             }
 
@@ -331,20 +340,20 @@ class MeshRepository(
                 val updatedPacket = decision.updatedPacket
                 log(
                     tag = "RELAY [FORWARD]",
-                    message = "ACTING AS RELAY: Node '${current.nodeId}' is forwarding packet '${updatedPacket.messageId}'.\nTTL decremented: ${packet.ttl} -> ${updatedPacket.ttl}\nHop count incremented: ${packet.hopCount} -> ${updatedPacket.hopCount}\nRoute history: ${updatedPacket.routeHistory.joinToString(" -> ")}",
+                    message = "ACTING AS RELAY: Node '${current.nodeId}' forwarding packet '${updatedPacket.messageId}'.\nTTL decremented: ${packet.ttl} -> ${updatedPacket.ttl}\nHop count incremented: ${packet.hopCount} -> ${updatedPacket.hopCount}\nRoute history: ${updatedPacket.routeHistory.joinToString(" -> ")}\nGenerating NEW frame + NEW CRC-16 for next hop...",
                     level = LogLevel.SUCCESS,
                     packetSummary = updatedPacket.getSummary(),
                     nodeId = updatedPacket.destinationId
                 )
 
-                // Transmit updated packet to next hop candidate neighbors
+                // Transmit updated packet with new CRC to candidate neighbors
                 val candidates = _connectedNodes.value.filter { decision.candidateNextHopNodeIds.contains(it.nodeId) }
                 for (nextHop in candidates) {
                     val targetEndpoint = nextHop.endpointId
                     if (targetEndpoint != null) {
                         log(
                             tag = "RELAY [TX]",
-                            message = "Transmitting forwarded packet to next-hop '${nextHop.nodeName}' [${nextHop.nodeId}]",
+                            message = "Transmitting forwarded frame with new CRC to next-hop '${nextHop.nodeName}' [${nextHop.nodeId}]",
                             level = LogLevel.INFO,
                             nodeId = nextHop.nodeId
                         )
@@ -352,7 +361,6 @@ class MeshRepository(
                     }
                 }
 
-                // If no specific candidate had endpoint, broadcast to all non-previous hops
                 if (candidates.isEmpty()) {
                     val exclude = mutableSetOf<String>()
                     fromEndpointId.takeIf { it.isNotBlank() }?.let { exclude.add(it) }
@@ -424,7 +432,7 @@ class MeshRepository(
             is TransportEvent.PacketSent -> {
                 log(
                     tag = "TX-CONFIRM",
-                    message = "Packet '${event.packet.messageId}' sent out via transport endpoint '${event.toEndpointId}'",
+                    message = "Frame containing '${event.packet.messageId}' successfully transmitted to endpoint '${event.toEndpointId}'",
                     level = LogLevel.INFO
                 )
             }

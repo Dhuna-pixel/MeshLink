@@ -18,13 +18,13 @@ enum class MeshScreenTab {
 }
 
 /**
- * Immutable state representing the complete UI state for MeshLink.
+ * Immutable state representing the complete UI state for MeshLink Review III.
  */
 data class MeshUiState(
     val currentNode: Node = Node(nodeId = "NODE-A", nodeName = "Node A"),
     val isNetworkingActive: Boolean = false,
     val isSimulationMode: Boolean = false,
-    val transportMode: TransportMode = TransportMode.NEARBY_CONNECTIONS,
+    val transportMode: TransportMode = TransportMode.BLE_GATT,
     val discoveredNodes: List<Node> = emptyList(),
     val connectedNodes: List<Node> = emptyList(),
     val messages: List<MessagePacket> = emptyList(),
@@ -37,5 +37,6 @@ data class MeshUiState(
     val isInspectingPacket: MessagePacket? = null,
     val isEditingIdentityDialogShown: Boolean = false,
     val isRunningSimulationAnimation: Boolean = false,
-    val simulationStepDescription: String = "Ready for test"
+    val simulationStepDescription: String = "Ready for test",
+    val isCrcErrorSimulationArmed: Boolean = false
 )

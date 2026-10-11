@@ -47,7 +47,6 @@ import com.meshlink.app.ui.components.PacketInspectorDialog
 import com.meshlink.app.ui.theme.MeshCyanPrimary
 import com.meshlink.app.ui.theme.MeshDarkBackground
 import com.meshlink.app.ui.theme.MeshDarkSurface
-import com.meshlink.app.ui.theme.MeshDarkSurfaceVariant
 import com.meshlink.app.ui.theme.MeshGreenAccent
 import com.meshlink.app.ui.theme.MeshPurpleAccent
 import com.meshlink.app.ui.theme.TextPrimary
@@ -89,11 +88,10 @@ fun MainScreen(viewModel: MeshViewModel) {
                     }
                 },
                 actions = {
-                    // Transport mode indicator badge in top app bar
                     val (badgeText, badgeColor) = when (uiState.transportMode) {
-                        TransportMode.NEARBY_CONNECTIONS -> "NEARBY" to MeshGreenAccent
                         TransportMode.BLE_GATT -> "BLE GATT" to MeshCyanPrimary
                         TransportMode.SIMULATION -> "SIM" to MeshPurpleAccent
+                        TransportMode.NEARBY_CONNECTIONS -> "NEARBY" to MeshGreenAccent
                     }
 
                     Box(
@@ -200,6 +198,7 @@ fun MainScreen(viewModel: MeshViewModel) {
                     onDestinationSelected = { viewModel.updateSelectedDestination(it) },
                     onMessageInputChanged = { viewModel.updateMessageInput(it) },
                     onTtlChanged = { viewModel.updateTtl(it) },
+                    onToggleCrcCorruption = { viewModel.toggleCrcErrorSimulation() },
                     onSendMessage = { viewModel.sendMessage() },
                     onInspectPacket = { viewModel.inspectPacket(it) },
                     onClearMessages = { viewModel.clearMessages() }
@@ -211,7 +210,8 @@ fun MainScreen(viewModel: MeshViewModel) {
                 )
                 MeshScreenTab.SIMULATION -> SimulationScreen(
                     uiState = uiState,
-                    onRunDemoClicked = { viewModel.runThreeNodeSimulationDemo() },
+                    onRunDemoClicked = { viewModel.runThreeNodeSimulationDemo(false) },
+                    onRunCorruptDemoClicked = { viewModel.runThreeNodeSimulationDemo(true) },
                     onResetSimulation = { viewModel.setSimulationMode(true) }
                 )
             }

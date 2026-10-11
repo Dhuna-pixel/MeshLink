@@ -121,6 +121,8 @@ class CrossPlatformPacketCompatibilityTest {
         assertTrue("Destination node should produce Deliver decision", decisionC is ForwardingDecision.Deliver)
         val deliveredPacket = (decisionC as ForwardingDecision.Deliver).packet
         assertEquals("Relay test across iPhone B", deliveredPacket.payload)
-        assertEquals(1, deliveredPacket.hopCount)
+        assertEquals(2, deliveredPacket.hopCount)
+        assertEquals(3, deliveredPacket.ttl)
+        assertEquals(listOf("NODE-A", "NODE-B", "NODE-C"), deliveredPacket.routeHistory)
     }
 }

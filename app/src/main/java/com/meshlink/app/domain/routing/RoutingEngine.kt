@@ -6,21 +6,38 @@ import com.meshlink.app.domain.models.Node
 import com.meshlink.app.domain.models.NodeStatus
 
 /**
- * Core Routing Engine for MeshLink.
+ * Core Routing Engine for MeshLink (Review III).
  *
- * Implements the decentralized multi-hop forwarding and delivery logic:
+ * Implements decentralized multi-hop routing, duplicate detection, deterministic TTL/hop
+ * semantics, and loop avoidance:
  *
- * A -> B -> C flow:
- * 1. Duplicate detection: Drops already processed message IDs to prevent broadcast storms / loops.
- * 2. Destination matching: If this node is the destination, deliver packet to user.
- * 3. TTL validation: If TTL <= 1, drops packet due to hop expiration.
- * 4. Next-Hop Selection: Identifies connected neighbors (excluding previous hop and route history to prevent loops).
- *    If direct destination is connected, targets that node; otherwise forwards to available neighbor(s).
- * 5. Packet Transformation: Decrements TTL, increments hop count, updates route history and previousHopId.
+ * A -> B -> C Flow:
+ * - Source A creates local packet: TTL = 5, HopCount = 0, RouteHistory = [A]
+ * - Node B (Relay) receives packet from A:
+ *     1. Duplicate check: PASS
+ *     2. Hop mutation (A -> B link): TTL = 4, HopCount = 1, RouteHistory = [A, B]
+ *     3. Destination check: Node B != Node C (Relay required)
+ *     4. TTL check: 4 >= 1 (Can forward)
+ *     5. Next hop selection: Node C (Node A excluded via loop avoidance)
+ *     6. Serializes updated packet, computes NEW CRC-16, and forwards to Node C
+ * - Node C (Destination) receives packet from B:
+ *     1. Duplicate check: PASS
+ *     2. Hop mutation (B -> C link): TTL = 3, HopCount = 2, RouteHistory = [A, B, C]
+ *     3. Destination check: Node C == Node C (DELIVER)
+ *     4. Final delivered state at Node C: TTL = 3, HopCount = 2, Route = [A, B, C]
+ *
+ * Direct A -> C Flow:
+ * - Source A: TTL = 5, HopCount = 0, Route = [A]
+ * - Destination C: TTL = 4, HopCount = 1, Route = [A, C]
+ *
+ * Two-Relay A -> B -> C -> D Flow:
+ * - Source A: TTL = 5, HopCount = 0, Route = [A]
+ * - Relay B: TTL = 4, HopCount = 1, Route = [A, B]
+ * - Relay C: TTL = 3, HopCount = 2, Route = [A, B, C]
+ * - Destination D: TTL = 2, HopCount = 3, Route = [A, B, C, D]
  *
  * Architecture principle:
- * This class is 100% pure domain logic and contains zero Android/UI dependencies.
- * It is easily testable with unit tests and replaceable in future reviews (e.g. AODV, DSR).
+ * Pure Kotlin domain logic with 0 Android/BLE dependencies.
  */
 class RoutingEngine(
     private val seenMessageManager: SeenMessageManager = SeenMessageManager()
@@ -48,46 +65,53 @@ class RoutingEngine(
         if (seenMessageManager.hasSeen(packet.messageId)) {
             return ForwardingDecision.DropDuplicate(
                 packetId = packet.messageId,
-                reason = "Message '${packet.messageId}' has already been processed by node '$currentNodeId'. Dropping duplicate to prevent looping."
+                reason = "WARN [DROP][DUPLICATE] messageId=${packet.messageId} node=$currentNodeId. Dropping duplicate packet."
             )
         }
 
-        // Mark as seen immediately so future occurrences are discarded
+        // Mark as seen immediately
         seenMessageManager.markSeen(packet.messageId)
 
         // =========================================================================
-        // STEP 2: DESTINATION CHECK
-        // Check if current node is the intended recipient.
+        // STEP 2: HOP TRAVERSAL MUTATION
+        // Exactly one link traversal has occurred into currentNodeId.
+        // Decrement TTL by 1, increment hopCount by 1, append currentNodeId to routeHistory.
+        // =========================================================================
+        val mutatedPacket = packet.createHopPacket(receivingNodeId = currentNodeId)
+
+        // =========================================================================
+        // STEP 3: DESTINATION CHECK
+        // If current node is the intended recipient, deliver with updated hop count & TTL.
         // =========================================================================
         if (packet.destinationId.equals(currentNodeId, ignoreCase = true)) {
             return ForwardingDecision.Deliver(
-                packet = packet,
-                reason = "Destination reached! Current node '$currentNodeId' is the intended recipient. Message delivered."
+                packet = mutatedPacket,
+                reason = "Destination reached! Node '$currentNodeId' is the intended recipient. Final TTL: ${mutatedPacket.ttl}, Hops: ${mutatedPacket.hopCount}, Path: ${mutatedPacket.routeHistory.joinToString(" -> ")}"
             )
         }
 
         // =========================================================================
-        // STEP 3: TTL (TIME-TO-LIVE) CHECK
-        // If TTL <= 1, decrementing will result in 0 or less, which means the packet has expired.
+        // STEP 4: TTL (TIME-TO-LIVE) CHECK ON RELAY
+        // If mutated TTL < 1, packet cannot survive another outbound hop.
         // =========================================================================
-        if (packet.ttl <= 1) {
+        if (mutatedPacket.ttl < 1) {
             return ForwardingDecision.DropTtlExpired(
                 packetId = packet.messageId,
-                currentTtl = packet.ttl,
-                reason = "TTL expired for message '${packet.messageId}' at relay node '$currentNodeId' (TTL was ${packet.ttl}). Packet dropped."
+                currentTtl = mutatedPacket.ttl,
+                reason = "WARN [DROP][TTL] messageId=${packet.messageId} node=$currentNodeId ttl=${mutatedPacket.ttl} hopCount=${mutatedPacket.hopCount} routeHistory=${mutatedPacket.routeHistory.joinToString(" -> ")}"
             )
         }
 
         // =========================================================================
-        // STEP 4: NEXT-HOP NEIGHBOR SELECTION & LOOP PREVENTION
+        // STEP 5: NEXT-HOP NEIGHBOR SELECTION & LOOP PREVENTION
         // Identify valid connected neighbors to forward the packet to.
         // =========================================================================
         val activeNeighbors = connectedNeighbors.filter { it.status == NodeStatus.CONNECTED }
 
         // Filter out:
-        // 1. The previous hop that just sent us the packet (avoid immediate echo)
-        // 2. Any node already in the route history (avoid cyclical loops)
-        // 3. Current node itself
+        // 1. Current node itself
+        // 2. Previous hop that transmitted to us (avoid immediate echo)
+        // 3. All nodes in route history (avoid cycles)
         val excludedNodeIds = mutableSetOf(currentNodeId)
         packet.previousHopId?.let { excludedNodeIds.add(it) }
         excludedNodeIds.addAll(packet.routeHistory)
@@ -100,11 +124,11 @@ class RoutingEngine(
             return ForwardingDecision.DropNoRoute(
                 packetId = packet.messageId,
                 destinationId = packet.destinationId,
-                reason = "No suitable next-hop neighbor available from '$currentNodeId' to reach '${packet.destinationId}'. Active neighbors: ${activeNeighbors.map { it.nodeId }}, Excluded: $excludedNodeIds"
+                reason = "WARN [DROP][NO_ROUTE] messageId=${packet.messageId} node=$currentNodeId destination=${packet.destinationId}. No suitable next-hop neighbor connected."
             )
         }
 
-        // Priority 1: Check if the ultimate destination is directly connected as an active neighbor
+        // Priority: Direct destination if connected as neighbor
         val directDestinationNeighbor = candidateNeighbors.find {
             it.nodeId.equals(packet.destinationId, ignoreCase = true)
         }
@@ -112,20 +136,13 @@ class RoutingEngine(
         val targetNeighborIds = if (directDestinationNeighbor != null) {
             listOf(directDestinationNeighbor.nodeId)
         } else {
-            // Forward to candidate neighbors (controlled neighbor relay)
             candidateNeighbors.map { it.nodeId }
         }
 
-        // =========================================================================
-        // STEP 5: PACKET TRANSFORMATION & FORWARDING
-        // Decrement TTL, increment hop count, record current node in route history.
-        // =========================================================================
-        val updatedPacket = packet.createForwardedPacket(relayNodeId = currentNodeId)
-
         return ForwardingDecision.Forward(
-            updatedPacket = updatedPacket,
+            updatedPacket = mutatedPacket,
             candidateNextHopNodeIds = targetNeighborIds,
-            reason = "Node '$currentNodeId' acting as relay: forwarding '${packet.messageId}' to next hop(s) ${targetNeighborIds.joinToString()}. TTL: ${packet.ttl} -> ${updatedPacket.ttl}, Hops: ${packet.hopCount} -> ${updatedPacket.hopCount}"
+            reason = "Node '$currentNodeId' relaying packet '${packet.messageId}' to ${targetNeighborIds.joinToString()}. TTL: ${packet.ttl} -> ${mutatedPacket.ttl}, Hops: ${packet.hopCount} -> ${mutatedPacket.hopCount}"
         )
     }
 
@@ -147,7 +164,7 @@ class RoutingEngine(
             sourceId = sourceId,
             sourceName = sourceName,
             destinationId = destinationId,
-            destinationName = destinationName,
+            destinationName = destinationName.ifEmpty { destinationId },
             payload = payload,
             ttl = initialTtl,
             hopCount = 0,

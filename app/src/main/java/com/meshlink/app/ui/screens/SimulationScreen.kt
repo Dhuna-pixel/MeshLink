@@ -1,6 +1,5 @@
 package com.meshlink.app.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -26,11 +25,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Route
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -51,10 +50,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meshlink.app.presentation.viewmodels.MeshUiState
 import com.meshlink.app.ui.theme.CodeLogBackground
+import com.meshlink.app.ui.theme.MeshAmberWarning
 import com.meshlink.app.ui.theme.MeshCyanPrimary
 import com.meshlink.app.ui.theme.MeshDarkBackground
 import com.meshlink.app.ui.theme.MeshDarkSurface
-import com.meshlink.app.ui.theme.MeshDarkSurfaceVariant
 import com.meshlink.app.ui.theme.MeshGreenAccent
 import com.meshlink.app.ui.theme.MeshPurpleAccent
 import com.meshlink.app.ui.theme.TextPrimary
@@ -64,6 +63,7 @@ import com.meshlink.app.ui.theme.TextSecondary
 fun SimulationScreen(
     uiState: MeshUiState,
     onRunDemoClicked: () -> Unit,
+    onRunCorruptDemoClicked: () -> Unit,
     onResetSimulation: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -84,14 +84,13 @@ fun SimulationScreen(
             .padding(16.dp)
             .verticalScroll(rememberScrollState())
     ) {
-        // Header
         Text(
-            text = "3-Node Multi-Hop Simulation",
+            text = "3-Node Multi-Hop & CRC Visualizer",
             style = MaterialTheme.typography.titleLarge,
             color = TextPrimary
         )
         Text(
-            text = "Demonstrates multi-hop routing (A ➔ B ➔ C) on the same device using genuine RoutingEngine instances.",
+            text = "Demonstrates multi-hop forwarding (A ➔ B ➔ C) with CRC-16 integrity verification at each hop using pure domain RoutingEngine instances.",
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary
         )
@@ -184,28 +183,43 @@ fun SimulationScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Actions
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Button(
-                        onClick = onRunDemoClicked,
-                        modifier = Modifier.weight(1f),
-                        enabled = !uiState.isRunningSimulationAnimation,
-                        colors = ButtonDefaults.buttonColors(containerColor = MeshGreenAccent, contentColor = MeshDarkBackground),
-                        shape = RoundedCornerShape(10.dp)
+                // Action buttons
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Trigger A ➔ B ➔ C Demo", fontWeight = FontWeight.Bold)
+                        Button(
+                            onClick = onRunDemoClicked,
+                            modifier = Modifier.weight(1f),
+                            enabled = !uiState.isRunningSimulationAnimation,
+                            colors = ButtonDefaults.buttonColors(containerColor = MeshGreenAccent, contentColor = MeshDarkBackground),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("A ➔ B ➔ C (CRC PASS)", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = onResetSimulation,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = TextSecondary)
+                        }
                     }
 
-                    OutlinedButton(
-                        onClick = onResetSimulation,
+                    // Test CRC Error Injection Button
+                    Button(
+                        onClick = onRunCorruptDemoClicked,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !uiState.isRunningSimulationAnimation,
+                        colors = ButtonDefaults.buttonColors(containerColor = MeshAmberWarning, contentColor = MeshDarkBackground),
                         shape = RoundedCornerShape(10.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = TextSecondary)
+                        Icon(imageVector = Icons.Default.BugReport, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Simulate CRC Error (Node B Rejection)", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -214,7 +228,7 @@ fun SimulationScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // =========================================================================
-        // FORWARDING DECISION LOGIC REFERENCE (For Student Review Presentation)
+        // REVIEW III ROUTING & CRC LOGIC REFERENCE
         // =========================================================================
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -223,7 +237,7 @@ fun SimulationScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Node B (Relay) Internal Execution Logic",
+                    text = "Review III Multi-Hop Pipeline Reference",
                     style = MaterialTheme.typography.titleMedium,
                     color = MeshGreenAccent
                 )
@@ -231,28 +245,28 @@ fun SimulationScreen(
 
                 LogicStepRow(
                     stepNum = "1",
-                    title = "Duplicate Check",
-                    desc = "Checks SeenMessageManager. If packetId exists ➔ DROP_DUPLICATE."
+                    title = "Source Node A Originates Packet",
+                    desc = "Creates packet (TTL: 5, Hops: 0, Route: [A]). Encodes frame & appends CRC-16-CCITT."
                 )
                 LogicStepRow(
                     stepNum = "2",
-                    title = "Destination Check",
-                    desc = "Checks if destinationId == NODE-B. (Node B != Node C ➔ Relay Required)."
+                    title = "Relay Node B Verifies CRC-16",
+                    desc = "Reassembles frame, recalculates CRC-16. If mismatch ➔ DROP before routing. If pass ➔ continue."
                 )
                 LogicStepRow(
                     stepNum = "3",
-                    title = "TTL Decrement & Validation",
-                    desc = "If TTL <= 1 ➔ DROP_TTL_EXPIRED. Otherwise TTL = TTL - 1 (5 ➔ 4)."
+                    title = "Relay Node B Mutates Hop & Route",
+                    desc = "Checks duplicates. Mutates packet: TTL = 5 - 1 = 4, Hops = 0 + 1 = 1, Route: [A, B]."
                 )
                 LogicStepRow(
                     stepNum = "4",
-                    title = "Hop Count & Path Mutation",
-                    desc = "hopCount = hopCount + 1 (0 ➔ 1). routeHistory += NODE-B."
+                    title = "Relay Node B Generates NEW CRC-16",
+                    desc = "Encodes forwarded packet into a NEW frame with a newly computed CRC-16 and transmits to Node C."
                 )
                 LogicStepRow(
                     stepNum = "5",
-                    title = "Next Hop Forwarding",
-                    desc = "Transmits updated packet to connected neighbor Node C (Excludes Node A previous hop)."
+                    title = "Destination Node C Delivers Message",
+                    desc = "Node C validates CRC-16 (PASS), mutates for final link (TTL = 3, Hops = 2, Route: [A, B, C]), and delivers to user."
                 )
             }
         }

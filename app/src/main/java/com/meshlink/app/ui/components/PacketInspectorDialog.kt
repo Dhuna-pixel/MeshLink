@@ -66,7 +66,7 @@ fun PacketInspectorDialog(
                 PacketFieldRow(label = "Hop Count", value = packet.hopCount.toString())
                 PacketFieldRow(
                     label = "Route Traversed",
-                    value = (packet.routeHistory + if (packet.destinationId.isNotEmpty()) listOf(packet.destinationId) else emptyList()).joinToString(" ➔ ")
+                    value = packet.routeHistory.joinToString(" ➔ ")
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))

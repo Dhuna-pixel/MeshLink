@@ -17,9 +17,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * Main ViewModel for MeshLink UI.
+ * Main ViewModel for MeshLink Review III UI.
  *
- * Exposes observable [MeshUiState] and maps user UI actions to repository & routing logic.
+ * Exposes observable [MeshUiState] and maps user UI actions to repository, BLE transport & routing logic.
  */
 class MeshViewModel(
     private val repository: MeshRepository
@@ -29,7 +29,6 @@ class MeshViewModel(
     val uiState: StateFlow<MeshUiState> = _uiState.asStateFlow()
 
     init {
-        // Combine repository flows into single unified UI state
         viewModelScope.launch {
             combine(
                 repository.currentNode,
@@ -99,7 +98,7 @@ class MeshViewModel(
     }
 
     fun setSimulationMode(isSim: Boolean) {
-        val mode = if (isSim) TransportMode.SIMULATION else TransportMode.NEARBY_CONNECTIONS
+        val mode = if (isSim) TransportMode.SIMULATION else TransportMode.BLE_GATT
         setTransportMode(mode)
     }
 
@@ -140,6 +139,15 @@ class MeshViewModel(
     }
 
     // =========================================================================
+    // CRC ERROR INJECTION CONTROL
+    // =========================================================================
+    fun toggleCrcErrorSimulation() {
+        val newArmed = !_uiState.value.isCrcErrorSimulationArmed
+        _uiState.update { it.copy(isCrcErrorSimulationArmed = newArmed) }
+        repository.triggerCrcErrorSimulation(newArmed)
+    }
+
+    // =========================================================================
     // SEND MESSAGE DISPATCH
     // =========================================================================
     fun sendMessage() {
@@ -159,23 +167,30 @@ class MeshViewModel(
             ttl = state.ttlSliderValue
         )
 
-        // Clear input field after sending
-        _uiState.update { it.copy(messageInputText = "") }
+        // Reset CRC error simulation state after transmission
+        _uiState.update { it.copy(messageInputText = "", isCrcErrorSimulationArmed = false) }
     }
 
     // =========================================================================
     // 3-NODE MULTI-HOP SIMULATION DEMONSTRATION
     // =========================================================================
-    fun runThreeNodeSimulationDemo() {
+    fun runThreeNodeSimulationDemo(corruptCrc: Boolean = false) {
         viewModelScope.launch {
+            if (corruptCrc) {
+                repository.triggerCrcErrorSimulation(true)
+            }
+
             _uiState.update {
                 it.copy(
                     isRunningSimulationAnimation = true,
-                    simulationStepDescription = "Step 1/3: Node A generating message for Node C (TTL: 5, Hops: 0)..."
+                    simulationStepDescription = if (corruptCrc) {
+                        "Step 1/2: Node A creating frame with INTENTIONAL CRC CORRUPTION for Node C..."
+                    } else {
+                        "Step 1/3: Node A encoding frame for Node C (TTL: 5, Hops: 0, CRC-16 Calculated)..."
+                    }
                 )
             }
 
-            // Ensure simulation mode is active
             if (!_uiState.value.isSimulationMode || !_uiState.value.isNetworkingActive) {
                 setSimulationMode(true)
             }
@@ -183,28 +198,33 @@ class MeshViewModel(
             delay(800)
 
             _uiState.update {
-                it.copy(simulationStepDescription = "Step 2/3: Node A transmitting packet to Relay Node B...")
+                it.copy(
+                    simulationStepDescription = if (corruptCrc) {
+                        "Step 2/2: Node A transmitting corrupted frame to Node B. Node B verifies CRC -> CRC FAIL! Frame DROPPED."
+                    } else {
+                        "Step 2/3: Node A transmitted to Node B. Node B verified CRC (PASS), mutated TTL 5->4, Hops 0->1, generated NEW CRC-16, forwarding to Node C..."
+                    }
+                )
             }
 
             repository.sendMessage(
                 destinationId = "NODE-C",
                 destinationName = "Node C (Destination)",
-                payload = "Hello Node C! This is a multi-hop test from Node A via relay Node B.",
+                payload = if (corruptCrc) "Corrupted Test Payload" else "Hello Node C! Multi-hop BLE GATT mesh verified with CRC-16.",
                 ttl = 5
             )
-
-            delay(1200)
-
-            _uiState.update {
-                it.copy(simulationStepDescription = "Step 3/3: Relay Node B processed packet, updated TTL to 4, Hops to 1, forwarded to Node C!")
-            }
 
             delay(1500)
 
             _uiState.update {
                 it.copy(
                     isRunningSimulationAnimation = false,
-                    simulationStepDescription = "Demo complete! Node C successfully delivered the packet."
+                    simulationStepDescription = if (corruptCrc) {
+                        "Demo Complete: Corrupted frame rejected before RoutingEngine. Multi-hop integrity preserved!"
+                    } else {
+                        "Demo Complete: Node C verified CRC (PASS) and delivered message (Final TTL: 3, Hops: 2, Path: NODE-A -> NODE-B -> NODE-C)."
+                    },
+                    isCrcErrorSimulationArmed = false
                 )
             }
         }
