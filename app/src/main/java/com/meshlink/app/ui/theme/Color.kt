@@ -1,22 +1,23 @@
 package com.meshlink.app.ui.theme
 
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
-// Modern Engineering Dark Theme Colors
-val MeshDarkBackground = Color(0xFF0F172A) // Deep Slate
-val MeshDarkSurface = Color(0xFF1E293B)    // Slate Card Surface
-val MeshDarkSurfaceVariant = Color(0xFF334155)
-
-val MeshCyanPrimary = Color(0xFF00E5FF)    // Vibrant Cyan
-val MeshCyanContainer = Color(0xFF004D61)
-val MeshGreenAccent = Color(0xFF00E676)    // Success Green
-val MeshGreenContainer = Color(0xFF004D25)
-val MeshPurpleAccent = Color(0xFFB388FF)   // Node C Destination Purple
-val MeshAmberWarning = Color(0xFFFFAB00)   // Warning Amber
-val MeshRedError = Color(0xFFFF5252)       // Error Red
-
-val TextPrimary = Color(0xFFF8FAFC)
-val TextSecondary = Color(0xFF94A3B8)
-val TextTertiary = Color(0xFF64748B)
-
-val CodeLogBackground = Color(0xFF020617)  // Terminal Deep Black
+// Semantic aliases keep all existing screens, dialogs and badges on the active Material palette.
+val MeshBackground: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.background
+val MeshSurface: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.surface
+val MeshSurfaceVariant: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.surfaceVariant
+val MeshCyanPrimary: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
+val MeshCyanContainer: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primaryContainer
+val MeshGreenAccent: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.secondary
+val MeshGreenContainer: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.secondaryContainer
+val MeshPurpleAccent: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.tertiary
+val MeshAmberWarning: Color @Composable @ReadOnlyComposable get() = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFFFC46B) else Color(0xFF805500)
+val MeshRedError: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.error
+val TextPrimary: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurface
+val TextSecondary: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurfaceVariant
+val TextTertiary: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurfaceVariant
+val CodeLogBackground: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.background

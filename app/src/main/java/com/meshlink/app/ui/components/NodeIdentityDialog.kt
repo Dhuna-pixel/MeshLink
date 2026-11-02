@@ -23,8 +23,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.meshlink.app.ui.theme.MeshCyanPrimary
-import com.meshlink.app.ui.theme.MeshDarkBackground
-import com.meshlink.app.ui.theme.MeshDarkSurface
+import com.meshlink.app.ui.theme.MeshBackground
+import com.meshlink.app.ui.theme.MeshSurface
 import com.meshlink.app.ui.theme.TextPrimary
 import com.meshlink.app.ui.theme.TextSecondary
 
@@ -40,7 +40,7 @@ fun NodeIdentityDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = MeshDarkSurface,
+        containerColor = MeshSurface,
         title = {
             Text(
                 text = "Configure Node Identity",
@@ -51,7 +51,7 @@ fun NodeIdentityDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "Assign a clear node identifier (e.g. 'NODE-A', 'NODE-B', 'NODE-C') for Review II demonstration.",
+                    text = "Choose a friendly name. Keep the unique ID stable; BLE demo configurations must use this exact ID.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
@@ -59,7 +59,7 @@ fun NodeIdentityDialog(
 
                 OutlinedTextField(
                     value = nodeId,
-                    onValueChange = { nodeId = it.uppercase() },
+                    onValueChange = { nodeId = it.take(80) },
                     label = { Text("Node ID") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
@@ -89,38 +89,13 @@ fun NodeIdentityDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Quick preset buttons for demo
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(
-                        onClick = { nodeId = "NODE-A"; nodeName = "Node A" },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Node A")
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    OutlinedButton(
-                        onClick = { nodeId = "NODE-B"; nodeName = "Node B (Relay)" },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Node B")
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    OutlinedButton(
-                        onClick = { nodeId = "NODE-C"; nodeName = "Node C" },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Node C")
-                    }
-                }
+
             }
         },
         confirmButton = {
             Button(
                 onClick = { onConfirm(nodeId, nodeName) },
-                colors = ButtonDefaults.buttonColors(containerColor = MeshCyanPrimary, contentColor = MeshDarkBackground),
+                colors = ButtonDefaults.buttonColors(containerColor = MeshCyanPrimary, contentColor = MaterialTheme.colorScheme.onPrimary),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text("Save")

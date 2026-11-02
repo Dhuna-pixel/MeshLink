@@ -24,7 +24,7 @@ sealed class TransportEvent {
 /**
  * Abstract interface representing a peer-to-peer transport layer for MeshLink.
  *
- * Decouples the physical networking technology (Nearby Connections, BLE, Wi-Fi Direct, or Simulation)
+ * Decouples the physical networking technology (Nearby Connections, BLE, or Wi-Fi Direct)
  * from the high-level routing engine and presentation layers.
  */
 interface MeshTransport {

@@ -29,8 +29,8 @@ import androidx.compose.ui.unit.sp
 import com.meshlink.app.domain.models.MessagePacket
 import com.meshlink.app.ui.theme.CodeLogBackground
 import com.meshlink.app.ui.theme.MeshCyanPrimary
-import com.meshlink.app.ui.theme.MeshDarkBackground
-import com.meshlink.app.ui.theme.MeshDarkSurface
+import com.meshlink.app.ui.theme.MeshBackground
+import com.meshlink.app.ui.theme.MeshSurface
 import com.meshlink.app.ui.theme.MeshGreenAccent
 import com.meshlink.app.ui.theme.TextPrimary
 import com.meshlink.app.ui.theme.TextSecondary
@@ -43,7 +43,7 @@ fun PacketInspectorDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = MeshDarkSurface,
+        containerColor = MeshSurface,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -114,7 +114,7 @@ fun PacketInspectorDialog(
         confirmButton = {
             Button(
                 onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = MeshCyanPrimary, contentColor = MeshDarkBackground),
+                colors = ButtonDefaults.buttonColors(containerColor = MeshCyanPrimary, contentColor = MaterialTheme.colorScheme.onPrimary),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text("Close")
@@ -143,5 +143,5 @@ private fun PacketFieldRow(label: String, value: String) {
             fontFamily = FontFamily.Monospace
         )
     }
-    Divider(color = MeshDarkBackground, thickness = 1.dp)
+    Divider(color = MeshBackground, thickness = 1.dp)
 }

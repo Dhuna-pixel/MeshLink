@@ -16,7 +16,6 @@ import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Mail
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -45,8 +44,8 @@ import com.meshlink.app.presentation.viewmodels.MeshViewModel
 import com.meshlink.app.ui.components.NodeIdentityDialog
 import com.meshlink.app.ui.components.PacketInspectorDialog
 import com.meshlink.app.ui.theme.MeshCyanPrimary
-import com.meshlink.app.ui.theme.MeshDarkBackground
-import com.meshlink.app.ui.theme.MeshDarkSurface
+import com.meshlink.app.ui.theme.MeshBackground
+import com.meshlink.app.ui.theme.MeshSurface
 import com.meshlink.app.ui.theme.MeshGreenAccent
 import com.meshlink.app.ui.theme.MeshPurpleAccent
 import com.meshlink.app.ui.theme.TextPrimary
@@ -54,7 +53,7 @@ import com.meshlink.app.ui.theme.TextSecondary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(viewModel: MeshViewModel) {
+fun MainScreen(viewModel: MeshViewModel, onToggleNetworking: () -> Unit, onNotificationPermission: () -> Unit, onSystemNotificationSettings: () -> Unit) {
     val uiState by viewModel.uiState.collectAsState()
 
     Scaffold(
@@ -66,7 +65,7 @@ fun MainScreen(viewModel: MeshViewModel) {
                             modifier = Modifier
                                 .size(10.dp)
                                 .background(
-                                    if (uiState.isNetworkingActive) MeshGreenAccent else Color.Gray,
+                                    if (uiState.isNetworkingActive) MeshGreenAccent else MaterialTheme.colorScheme.outline,
                                     CircleShape
                                 )
                         )
@@ -89,8 +88,7 @@ fun MainScreen(viewModel: MeshViewModel) {
                 },
                 actions = {
                     val (badgeText, badgeColor) = when (uiState.transportMode) {
-                        TransportMode.BLE_GATT -> "BLE GATT" to MeshCyanPrimary
-                        TransportMode.SIMULATION -> "SIM" to MeshPurpleAccent
+                        TransportMode.BLE_GATT -> (if (uiState.demoTopology.enabled) "BLE DEMO" else "BLE GATT") to MeshCyanPrimary
                         TransportMode.NEARBY_CONNECTIONS -> "NEARBY" to MeshGreenAccent
                     }
 
@@ -108,24 +106,24 @@ fun MainScreen(viewModel: MeshViewModel) {
                         )
                     }
 
-                    IconButton(onClick = { viewModel.showIdentityDialog(true) }) {
+                    IconButton(onClick = { viewModel.openSettings() }) {
                         Icon(
                             imageVector = Icons.Default.Settings,
-                            contentDescription = "Configure Node",
+                            contentDescription = "Settings",
                             tint = TextSecondary
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MeshDarkSurface)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MeshSurface)
             )
         },
         bottomBar = {
             NavigationBar(
-                containerColor = MeshDarkSurface,
+                containerColor = MeshSurface,
                 tonalElevation = 4.dp
             ) {
                 val navItemColors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MeshDarkBackground,
+                    selectedIconColor = MaterialTheme.colorScheme.onPrimary,
                     selectedTextColor = MeshCyanPrimary,
                     indicatorColor = MeshCyanPrimary,
                     unselectedIconColor = TextSecondary,
@@ -164,16 +162,10 @@ fun MainScreen(viewModel: MeshViewModel) {
                     colors = navItemColors
                 )
 
-                NavigationBarItem(
-                    selected = uiState.selectedTab == MeshScreenTab.SIMULATION,
-                    onClick = { viewModel.selectTab(MeshScreenTab.SIMULATION) },
-                    icon = { Icon(Icons.Default.PlayCircle, contentDescription = "3-Node Sim") },
-                    label = { Text("3-Node Sim", fontSize = 10.sp) },
-                    colors = navItemColors
-                )
+
             }
         },
-        containerColor = MeshDarkBackground
+        containerColor = MeshBackground
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -183,7 +175,8 @@ fun MainScreen(viewModel: MeshViewModel) {
             when (uiState.selectedTab) {
                 MeshScreenTab.NODE_STATUS -> HomeScreen(
                     uiState = uiState,
-                    onToggleNetworking = { viewModel.toggleNetworking() },
+                    onToggleNetworking = onToggleNetworking,
+                    onConfigureDemo = viewModel::configureDemo,
                     onSelectTransportMode = { viewModel.setTransportMode(it) },
                     onEditIdentityClicked = { viewModel.showIdentityDialog(true) },
                     onNavigateToTab = { viewModel.selectTab(it) }
@@ -208,12 +201,10 @@ fun MainScreen(viewModel: MeshViewModel) {
                     onFilterChanged = { viewModel.setLogFilter(it) },
                     onClearLogs = { viewModel.clearLogs() }
                 )
-                MeshScreenTab.SIMULATION -> SimulationScreen(
-                    uiState = uiState,
-                    onRunDemoClicked = { viewModel.runThreeNodeSimulationDemo(false) },
-                    onRunCorruptDemoClicked = { viewModel.runThreeNodeSimulationDemo(true) },
-                    onResetSimulation = { viewModel.setSimulationMode(true) }
-                )
+                MeshScreenTab.SETTINGS -> SettingsScreen(uiState,viewModel::closeSettings,viewModel::setTheme,
+                    viewModel::setNotifications,viewModel::setPrivatePreview,onNotificationPermission,onSystemNotificationSettings,
+                    { viewModel.showIdentityDialog(true) })
+
             }
         }
 

@@ -4,7 +4,6 @@ import android.content.Context
 import com.meshlink.app.data.transport.AndroidBleGattTransport
 import com.meshlink.app.data.transport.MeshTransport
 import com.meshlink.app.data.transport.NearbyConnectionsTransport
-import com.meshlink.app.data.transport.SimulationTransport
 import com.meshlink.app.data.transport.TransportEvent
 import com.meshlink.app.domain.models.ForwardingDecision
 import com.meshlink.app.domain.models.LogLevel
@@ -30,9 +29,6 @@ enum class TransportMode {
     /** Primary Review III Transport: Hardware BLE GATT Dual-Role mesh */
     BLE_GATT,
 
-    /** High-fidelity virtual 3-node simulation testbed */
-    SIMULATION,
-
     /** Google Play Services Nearby Connections */
     NEARBY_CONNECTIONS
 }
@@ -47,14 +43,38 @@ class MeshRepository(
     private val context: Context,
     private val routingEngine: RoutingEngine = RoutingEngine()
 ) {
-    private val repositoryScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    val appPreferences = com.meshlink.app.data.preferences.AppPreferencesStore(
+        com.meshlink.app.data.preferences.AndroidPreferenceStorage(context,"mesh_settings"))
+    val messageNotifier = com.meshlink.app.data.notifications.AndroidMessageNotifier(context)
+    private val receivedInbox = com.meshlink.app.domain.notifications.ReceivedMessageStore(
+        com.meshlink.app.data.preferences.AndroidPreferenceStorage(context,"mesh_received"))
+    private val deliveryNotifications by lazy {
+        com.meshlink.app.domain.notifications.DeliveredMessageNotifications(
+            localId = { _currentNode.value.nodeId }, preferences = { appPreferences.state.value },
+            systemAllowed = messageNotifier::permitted, inbox = receivedInbox,
+            senderName = { id -> (_connectedNodes.value + knownNodes.value).find { it.nodeId == id }?.nodeName },
+            post = messageNotifier::post)
+    }
+    fun receivedMessage(target: com.meshlink.app.domain.notifications.NotificationTarget) = receivedInbox.find(_currentNode.value.nodeId,target)
+    fun showReceivedMessage(target: com.meshlink.app.domain.notifications.NotificationTarget): MessagePacket? {
+        val packet = receivedMessage(target) ?: return null
+        _messages.update { (listOf(packet) + it.filterNot { old -> old.messageId == packet.messageId && old.sourceId == packet.sourceId }).take(500) }
+        return packet
+    }
+    private val repositoryScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
 
+    private val preferences = context.getSharedPreferences("mesh_identity", Context.MODE_PRIVATE)
+    private val stableId = preferences.getString("id", null) ?: java.util.UUID.randomUUID().toString().also {
+        preferences.edit().putString("id", it).apply()
+    }
+    private var aodv: com.meshlink.app.domain.routing.AodvEngine? = null
+    val bluetoothStatus = MutableStateFlow("Checking")
+    val knownNodes = MutableStateFlow<List<Node>>(emptyList())
+    val routes = MutableStateFlow<List<com.meshlink.app.domain.routing.AodvRoute>>(emptyList())
+    val deliveryStatuses = MutableStateFlow<Map<String, String>>(emptyMap())
     // Transports
     val bleTransport: AndroidBleGattTransport by lazy {
         AndroidBleGattTransport(context)
-    }
-    val simulationTransport: SimulationTransport by lazy {
-        SimulationTransport()
     }
     val nearbyTransport: NearbyConnectionsTransport by lazy {
         NearbyConnectionsTransport(context)
@@ -67,8 +87,8 @@ class MeshRepository(
     // =========================================================================
     private val _currentNode = MutableStateFlow(
         Node(
-            nodeId = IdGenerator.generateNodeId("NODE-A"),
-            nodeName = "Node A",
+            nodeId = stableId,
+            nodeName = preferences.getString("name", null) ?: "Mesh-${stableId.take(6)}",
             status = NodeStatus.DISCONNECTED
         )
     )
@@ -93,24 +113,40 @@ class MeshRepository(
     private val _transportMode = MutableStateFlow(TransportMode.BLE_GATT)
     val transportMode: StateFlow<TransportMode> = _transportMode.asStateFlow()
 
-    val isSimulationMode: StateFlow<Boolean> = MutableStateFlow(false).apply {
-        repositoryScope.launch {
-            _transportMode.collect { mode ->
-                value = (mode == TransportMode.SIMULATION)
-            }
-        }
+    val demoTopology = MutableStateFlow(com.meshlink.app.domain.network.DemoTopology())
+
+    @Synchronized fun configureDemo(topology: com.meshlink.app.domain.network.DemoTopology) {
+        val wasActive = _isNetworkingActive.value
+        if (wasActive) stopNetworking()
+        bleTransport.configureDemo(topology)
+        demoTopology.value = topology
+        log("DEMO", if (topology.enabled) "Controlled BLE Demo Mode: allowed neighbors ${topology.permittedIds.joinToString()}" else "Normal BLE Mode: restrictions disabled")
+        if (wasActive) startNetworking(_transportMode.value)
     }
 
     init {
+        repositoryScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(1_000)
+                bluetoothStatus.value = try {
+                    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+                    if (adapter == null) "Unavailable" else if (adapter.isEnabled) "On" else "Off"
+                } catch (_: SecurityException) { "Permission required" }
+                aodv?.tick()
+                routes.value = aodv?.snapshot() ?: emptyList()
+                knownNodes.update { known -> known.filter { node -> _connectedNodes.value.any { it.nodeId == node.nodeId } || System.currentTimeMillis() - node.lastSeenTimestamp < 300_000 } }
+                if (_transportMode.value == TransportMode.BLE_GATT) {
+                    _isNetworkingActive.value = bleTransport.isRunning.value
+                    if (!bleTransport.isRunning.value) { _connectedNodes.value = emptyList(); aodv = null; routes.value = emptyList() }
+                }
+            }
+        }
         // Collect transport events from all transports in background coroutines
         repositoryScope.launch {
-            bleTransport.events.collect { handleTransportEvent(it) }
+            bleTransport.events.collect { if (_transportMode.value == TransportMode.BLE_GATT) handleTransportEvent(it) }
         }
         repositoryScope.launch {
-            simulationTransport.events.collect { handleTransportEvent(it) }
-        }
-        repositoryScope.launch {
-            nearbyTransport.events.collect { handleTransportEvent(it) }
+            nearbyTransport.events.collect { if (_transportMode.value == TransportMode.NEARBY_CONNECTIONS) handleTransportEvent(it) }
         }
 
         log(
@@ -131,10 +167,11 @@ class MeshRepository(
         }
 
         val updated = _currentNode.value.copy(
-            nodeId = nodeId.trim().ifEmpty { IdGenerator.generateNodeId() },
-            nodeName = nodeName.trim().ifEmpty { "Node" }
+            nodeId = nodeId.trim().take(80).ifEmpty { IdGenerator.generateNodeId() },
+            nodeName = nodeName.trim().take(64).ifEmpty { "Node" }
         )
         _currentNode.value = updated
+        preferences.edit().putString("id", updated.nodeId).putString("name", updated.nodeName).apply()
 
         log(
             tag = "CONFIG",
@@ -153,7 +190,6 @@ class MeshRepository(
     // =========================================================================
     fun triggerCrcErrorSimulation(corrupt: Boolean = true) {
         bleTransport.setCorruptNextCrc(corrupt)
-        simulationTransport.setCorruptNextFrame(corrupt)
         nearbyTransport.setCorruptNextFrame(corrupt)
         log(
             tag = "TEST-MODE",
@@ -181,11 +217,19 @@ class MeshRepository(
         }
     }
 
-    fun startNetworking(mode: TransportMode) {
+    fun requestNetworkingStart() {
+        androidx.core.content.ContextCompat.startForegroundService(context,
+            android.content.Intent(context, com.meshlink.app.service.MeshNetworkingService::class.java))
+    }
+    fun requestNetworkingStop() {
+        context.stopService(android.content.Intent(context, com.meshlink.app.service.MeshNetworkingService::class.java))
+    }
+
+    @Synchronized fun startNetworking(mode: TransportMode) {
+        if (_isNetworkingActive.value || activeTransport.isRunning.value) return
         _transportMode.value = mode
         activeTransport = when (mode) {
             TransportMode.BLE_GATT -> bleTransport
-            TransportMode.SIMULATION -> simulationTransport
             TransportMode.NEARBY_CONNECTIONS -> nearbyTransport
         }
 
@@ -198,18 +242,40 @@ class MeshRepository(
             level = LogLevel.INFO
         )
 
+        if (mode == TransportMode.BLE_GATT) {
+            val current = _currentNode.value
+            aodv = com.meshlink.app.domain.routing.AodvEngine(current.nodeId, current.nodeName,
+                transmit = { nextHop, packet ->
+                    _connectedNodes.value.find { it.nodeId == nextHop && demoTopology.value.permits(nextHop) }?.endpointId?.let { bleTransport.sendPacket(packet, it) } ?: false
+                },
+                delivered = { packet ->
+                    _messages.update { (listOf(packet) + it).take(500) }
+                    // This callback is reached only after BLE frame validation and final AODV delivery.
+                    runCatching { deliveryNotifications.onDelivered(packet) }
+                    log("DELIVER", "Message delivered: ${packet.getSummary()}", LogLevel.SUCCESS)
+                },
+                status = { id, status -> deliveryStatuses.update { (it + (id to status)).entries.toList().takeLast(500).associate { it.toPair() } } },
+                learned = { id, name -> knownNodes.update { (it.filter { n -> n.nodeId != id } + Node(id, name, status = NodeStatus.DISCONNECTED)).takeLast(512) } },
+                log = { log("AODV", it) },
+                acknowledged = { messageId, path ->
+                    _messages.update { messages -> messages.map { packet ->
+                        if (packet.messageId == messageId) packet.copy(routeHistory = path, hopCount = path.size - 1, ttl = packet.ttl - (path.size - 1)) else packet
+                    } }
+                })
+        }
         activeTransport.start(_currentNode.value)
+        _isNetworkingActive.value = activeTransport.isRunning.value
     }
 
-    fun startNetworking(simulation: Boolean = false) {
-        val mode = if (simulation) TransportMode.SIMULATION else _transportMode.value
-        startNetworking(mode)
-    }
+    fun startNetworking() = startNetworking(_transportMode.value)
 
-    fun stopNetworking() {
+    @Synchronized fun stopNetworking() {
+        aodv = null
+        routes.value = emptyList()
         activeTransport.stop()
         _isNetworkingActive.value = false
         _currentNode.update { it.copy(status = NodeStatus.DISCONNECTED) }
+        deliveryStatuses.update { statuses -> statuses.mapValues { (_, value) -> if (value.startsWith("Delivered") || value.startsWith("Failed")) value else "Failed: networking stopped" } }
         _discoveredNodes.value = emptyList()
         _connectedNodes.value = emptyList()
 
@@ -234,15 +300,14 @@ class MeshRepository(
         activeTransport.disconnectNode(nodeId)
     }
 
-    fun startMesh(simulation: Boolean = false) = startNetworking(simulation)
-    fun stopMesh() = stopNetworking()
+    fun startMesh() = requestNetworkingStart()
+    fun stopMesh() = requestNetworkingStop()
     fun connectToNeighbor(targetNode: Node) = connectToNode(targetNode)
     fun disconnectNeighbor(nodeId: String) = disconnectNode(nodeId)
 
     private fun getTransportModeDescription(mode: TransportMode): String {
         return when (mode) {
             TransportMode.BLE_GATT -> "BLE GATT (Dual-Role Android Mesh + CRC-16 Integrity)"
-            TransportMode.SIMULATION -> "3-NODE VIRTUAL SIMULATION (A -> B -> C)"
             TransportMode.NEARBY_CONNECTIONS -> "NEARBY CONNECTIONS"
         }
     }
@@ -270,7 +335,7 @@ class MeshRepository(
         )
 
         // Store in local message history
-        _messages.update { listOf(packet) + it }
+        _messages.update { (listOf(packet) + it).take(500) }
 
         log(
             tag = "SEND [LOCAL]",
@@ -280,6 +345,12 @@ class MeshRepository(
             nodeId = destinationId
         )
 
+        if (_transportMode.value == TransportMode.BLE_GATT) {
+            if (!_isNetworkingActive.value || payload.toByteArray().size > 2000) {
+                deliveryStatuses.update { it + (messageId to "Failed: networking stopped or message exceeds 2000 UTF-8 bytes") }
+            } else aodv?.send(packet)
+            return packet
+        }
         val connectedNeighbors = _connectedNodes.value
         val directNeighbor = connectedNeighbors.find { it.nodeId.equals(destinationId, ignoreCase = true) }
         if (directNeighbor?.endpointId != null) {
@@ -305,6 +376,10 @@ class MeshRepository(
     // INCOMING PACKET PROCESSING (Pure Domain Routing Execution)
     // =========================================================================
     private fun handleIncomingPacket(packet: MessagePacket, fromEndpointId: String) {
+        if (_transportMode.value == TransportMode.BLE_GATT) {
+            _connectedNodes.value.find { it.endpointId == fromEndpointId && demoTopology.value.permits(it.nodeId) }?.let { aodv?.receive(packet, it.nodeId) }
+            return
+        }
         val current = _currentNode.value
 
         log(
@@ -328,7 +403,7 @@ class MeshRepository(
                 _messages.update { listOf(delivered) + it }
                 log(
                     tag = "DELIVER [DEST]",
-                    message = "MESSAGE DELIVERED! Current node '${current.nodeId}' is the final destination.\nPayload: \"${delivered.payload}\"\nFinal TTL: ${delivered.ttl}\nFinal Hop Count: ${delivered.hopCount}\nComplete Route: ${delivered.routeHistory.joinToString(" -> ")}",
+                    message = "Message delivered locally; ${delivered.hopCount} hops, TTL ${delivered.ttl}",
                     level = LogLevel.SUCCESS,
                     packetSummary = delivered.getSummary(),
                     nodeId = delivered.sourceId
@@ -336,7 +411,7 @@ class MeshRepository(
             }
 
             is ForwardingDecision.Forward -> {
-                // Current node is intermediate RELAY node (e.g. Node B)
+                // Current node is an intermediate relay
                 val updatedPacket = decision.updatedPacket
                 log(
                     tag = "RELAY [FORWARD]",
@@ -413,15 +488,19 @@ class MeshRepository(
             }
             is TransportEvent.NodeConnected -> {
                 val node = event.node
+                if (_transportMode.value == TransportMode.BLE_GATT && (!demoTopology.value.permits(node.nodeId) || !bleTransport.isReadyPeer(node.nodeId, node.endpointId))) return
                 _discoveredNodes.update { list ->
-                    list.filter { it.nodeId != node.nodeId }
+                    list.filter { it.nodeId != node.nodeId && it.endpointId != node.endpointId }
                 }
                 _connectedNodes.update { list ->
                     val filtered = list.filter { it.nodeId != node.nodeId && it.endpointId != node.endpointId }
                     filtered + node
                 }
+                aodv?.neighborUp(node.nodeId)
+                knownNodes.update { (it.filter { n -> n.nodeId != node.nodeId } + node).takeLast(512) }
             }
             is TransportEvent.NodeDisconnected -> {
+                aodv?.neighborDown(event.nodeId)
                 _connectedNodes.update { list ->
                     list.filter { it.nodeId != event.nodeId && it.endpointId != event.endpointId }
                 }
@@ -430,6 +509,12 @@ class MeshRepository(
                 handleIncomingPacket(event.packet, event.fromEndpointId)
             }
             is TransportEvent.PacketSent -> {
+                if (_transportMode.value == TransportMode.BLE_GATT && event.packet.sourceId == _currentNode.value.nodeId && event.packet.control == null && event.packet.ackFor == null) {
+                    deliveryStatuses.update { statuses ->
+                        if (statuses[event.packet.messageId]?.startsWith("Delivered") == true || statuses[event.packet.messageId]?.startsWith("Failed") == true) statuses
+                        else statuses + (event.packet.messageId to "Next-hop ATT receipt; awaiting destination ACK")
+                    }
+                }
                 log(
                     tag = "TX-CONFIRM",
                     message = "Frame containing '${event.packet.messageId}' successfully transmitted to endpoint '${event.toEndpointId}'",
@@ -447,7 +532,7 @@ class MeshRepository(
                 )
             }
             is TransportEvent.ConnectionInitiated -> {
-                // Handled in transport
+                _discoveredNodes.update { nodes -> nodes.map { if (it.endpointId == event.endpointId) it.copy(status = NodeStatus.CONNECTING) else it } }
             }
         }
     }

@@ -33,7 +33,7 @@ fun NodeStatusBadge(
         NodeStatus.CONNECTED -> Triple(MeshGreenAccent.copy(alpha = 0.2f), MeshGreenAccent, "CONNECTED")
         NodeStatus.CONNECTING -> Triple(MeshAmberWarning.copy(alpha = 0.2f), MeshAmberWarning, "CONNECTING")
         NodeStatus.DISCOVERED -> Triple(MeshCyanPrimary.copy(alpha = 0.2f), MeshCyanPrimary, "DISCOVERED")
-        NodeStatus.DISCONNECTED -> Triple(Color.Gray.copy(alpha = 0.2f), Color.LightGray, "OFFLINE")
+        NodeStatus.DISCONNECTED -> Triple(MaterialTheme.colorScheme.outline.copy(alpha = 0.2f), MaterialTheme.colorScheme.onSurfaceVariant, "OFFLINE")
     }
 
     Row(

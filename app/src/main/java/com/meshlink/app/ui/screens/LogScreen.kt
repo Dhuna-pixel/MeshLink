@@ -38,9 +38,9 @@ import com.meshlink.app.ui.components.LogLevelBadge
 import com.meshlink.app.ui.theme.CodeLogBackground
 import com.meshlink.app.ui.theme.MeshAmberWarning
 import com.meshlink.app.ui.theme.MeshCyanPrimary
-import com.meshlink.app.ui.theme.MeshDarkBackground
-import com.meshlink.app.ui.theme.MeshDarkSurface
-import com.meshlink.app.ui.theme.MeshDarkSurfaceVariant
+import com.meshlink.app.ui.theme.MeshBackground
+import com.meshlink.app.ui.theme.MeshSurface
+import com.meshlink.app.ui.theme.MeshSurfaceVariant
 import com.meshlink.app.ui.theme.MeshGreenAccent
 import com.meshlink.app.ui.theme.MeshRedError
 import com.meshlink.app.ui.theme.TextPrimary
@@ -61,7 +61,7 @@ fun LogScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MeshDarkBackground)
+            .background(MeshBackground)
             .padding(16.dp)
     ) {
         Row(
@@ -104,8 +104,8 @@ fun LogScreen(
                 label = { Text("ALL (${uiState.networkLogs.size})", fontSize = 11.sp) },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MeshCyanPrimary,
-                    selectedLabelColor = MeshDarkBackground,
-                    containerColor = MeshDarkSurfaceVariant,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                    containerColor = MeshSurfaceVariant,
                     labelColor = TextPrimary
                 )
             )
@@ -115,8 +115,8 @@ fun LogScreen(
                 label = { Text("SUCCESS", fontSize = 11.sp) },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MeshGreenAccent,
-                    selectedLabelColor = MeshDarkBackground,
-                    containerColor = MeshDarkSurfaceVariant,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                    containerColor = MeshSurfaceVariant,
                     labelColor = MeshGreenAccent
                 )
             )
@@ -126,8 +126,8 @@ fun LogScreen(
                 label = { Text("INFO", fontSize = 11.sp) },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MeshCyanPrimary,
-                    selectedLabelColor = MeshDarkBackground,
-                    containerColor = MeshDarkSurfaceVariant,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                    containerColor = MeshSurfaceVariant,
                     labelColor = MeshCyanPrimary
                 )
             )
@@ -137,8 +137,8 @@ fun LogScreen(
                 label = { Text("WARN", fontSize = 11.sp) },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MeshAmberWarning,
-                    selectedLabelColor = MeshDarkBackground,
-                    containerColor = MeshDarkSurfaceVariant,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                    containerColor = MeshSurfaceVariant,
                     labelColor = MeshAmberWarning
                 )
             )
@@ -190,7 +190,7 @@ private fun LogEntryItem(entry: NetworkLogEntry) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MeshDarkSurface.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+            .background(MeshSurface.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
             .padding(8.dp)
     ) {
         Row(

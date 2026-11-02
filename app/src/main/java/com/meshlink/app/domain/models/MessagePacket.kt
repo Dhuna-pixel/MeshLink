@@ -29,7 +29,10 @@ data class MessagePacket(
     val hopCount: Int = 0,
     val timestamp: Long = System.currentTimeMillis(),
     val routeHistory: List<String> = emptyList(),
-    val previousHopId: String? = null
+    val previousHopId: String? = null,
+    val control: com.meshlink.app.domain.routing.RouteControl? = null,
+    val ackFor: String? = null,
+    val returnPath: List<String> = emptyList()
 ) {
     /**
      * Creates an updated clone of this packet when a link traversal into [receivingNodeId] occurs.

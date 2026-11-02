@@ -43,8 +43,8 @@ import com.meshlink.app.domain.models.NodeStatus
 import com.meshlink.app.presentation.viewmodels.MeshUiState
 import com.meshlink.app.ui.components.NodeStatusBadge
 import com.meshlink.app.ui.theme.MeshCyanPrimary
-import com.meshlink.app.ui.theme.MeshDarkBackground
-import com.meshlink.app.ui.theme.MeshDarkSurface
+import com.meshlink.app.ui.theme.MeshBackground
+import com.meshlink.app.ui.theme.MeshSurface
 import com.meshlink.app.ui.theme.MeshGreenAccent
 import com.meshlink.app.ui.theme.MeshRedError
 import com.meshlink.app.ui.theme.TextPrimary
@@ -59,7 +59,7 @@ fun NeighborsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MeshDarkBackground)
+            .background(MeshBackground)
             .padding(16.dp)
     ) {
         Row(
@@ -197,7 +197,7 @@ private fun NodeItemCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MeshDarkSurface),
+        colors = CardDefaults.cardColors(containerColor = MeshSurface),
         shape = RoundedCornerShape(12.dp)
     ) {
         Row(
@@ -228,7 +228,7 @@ private fun NodeItemCard(
                     Text(
                         text = "Endpoint: $ep | Relay Capable: ${if (node.isRelayCapable) "YES" else "NO"}",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color.Gray,
+                        color = MaterialTheme.colorScheme.outline,
                         fontSize = 11.sp
                     )
                 }
@@ -246,7 +246,7 @@ private fun NodeItemCard(
             } else {
                 Button(
                     onClick = onConnect,
-                    colors = ButtonDefaults.buttonColors(containerColor = MeshCyanPrimary, contentColor = MeshDarkBackground),
+                    colors = ButtonDefaults.buttonColors(containerColor = MeshCyanPrimary, contentColor = MaterialTheme.colorScheme.onPrimary),
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Icon(imageVector = Icons.Default.Link, contentDescription = null)

@@ -142,6 +142,7 @@ object MeshLinkFrame {
         }
 
         val frameType = frameBytes[1]
+        if (frameType !in FRAME_TYPE_ROUTED_PACKET..FRAME_TYPE_HEARTBEAT) return FrameResult.CorruptedHeader("Unsupported frame type")
         val payloadLength = ((frameBytes[2].toInt() and 0xFF) shl 8) or (frameBytes[3].toInt() and 0xFF)
 
         if (payloadLength > MAX_PAYLOAD_SIZE) {
@@ -149,7 +150,7 @@ object MeshLinkFrame {
         }
 
         val expectedTotalSize = HEADER_SIZE + payloadLength + CRC_SIZE
-        if (frameBytes.size < expectedTotalSize) {
+        if (frameBytes.size != expectedTotalSize) {
             return FrameResult.CorruptedHeader("Truncated frame: expected $expectedTotalSize bytes, got ${frameBytes.size}")
         }
 

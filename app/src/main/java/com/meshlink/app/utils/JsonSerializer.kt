@@ -32,11 +32,7 @@ object JsonSerializer {
         return try {
             json.decodeFromString<MessagePacket>(jsonStr)
         } catch (e: Exception) {
-            try {
-                gson.fromJson(jsonStr, MessagePacket::class.java)
-            } catch (e2: Exception) {
-                null
-            }
+            null
         }
     }
 

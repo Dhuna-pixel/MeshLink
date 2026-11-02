@@ -1,0 +1,51 @@
+ M app/build.gradle.kts
+ M app/src/main/AndroidManifest.xml
+ M app/src/main/java/com/meshlink/app/MainActivity.kt
+ M app/src/main/java/com/meshlink/app/data/repository/MeshRepository.kt
+ M app/src/main/java/com/meshlink/app/data/transport/AndroidBleGattTransport.kt
+ M app/src/main/java/com/meshlink/app/data/transport/SimulationTransport.kt
+ M app/src/main/java/com/meshlink/app/data/transport/framing/MeshLinkFrame.kt
+ M app/src/main/java/com/meshlink/app/domain/models/MessagePacket.kt
+ M app/src/main/java/com/meshlink/app/presentation/viewmodels/MeshUiState.kt
+ M app/src/main/java/com/meshlink/app/presentation/viewmodels/MeshViewModel.kt
+ M app/src/main/java/com/meshlink/app/ui/components/NodeIdentityDialog.kt
+ M app/src/main/java/com/meshlink/app/ui/components/PacketInspectorDialog.kt
+ M app/src/main/java/com/meshlink/app/ui/components/PermissionHandler.kt
+ M app/src/main/java/com/meshlink/app/ui/components/StatusBadges.kt
+ M app/src/main/java/com/meshlink/app/ui/screens/HomeScreen.kt
+ M app/src/main/java/com/meshlink/app/ui/screens/LogScreen.kt
+ M app/src/main/java/com/meshlink/app/ui/screens/MainScreen.kt
+ M app/src/main/java/com/meshlink/app/ui/screens/MessagingScreen.kt
+ M app/src/main/java/com/meshlink/app/ui/screens/NeighborsScreen.kt
+ M app/src/main/java/com/meshlink/app/ui/screens/SimulationScreen.kt
+ M app/src/main/java/com/meshlink/app/ui/theme/Color.kt
+ M app/src/main/java/com/meshlink/app/ui/theme/Theme.kt
+ M app/src/main/java/com/meshlink/app/utils/JsonSerializer.kt
+ M app/src/main/res/values/themes.xml
+ M app/src/main/res/xml/backup_rules.xml
+ M app/src/main/res/xml/data_extraction_rules.xml
+?? IMPLEMENTATION_REPORT.md
+?? LOCAL_GIT_STATUS.txt
+?? NOTIFICATIONS_THEME_REPORT.md
+?? UX_SIMULATION_REPORT.md
+?? app/src/androidTest/
+?? app/src/main/java/com/meshlink/app/data/notifications/
+?? app/src/main/java/com/meshlink/app/data/preferences/
+?? app/src/main/java/com/meshlink/app/data/transport/BleConnectionPolicy.kt
+?? app/src/main/java/com/meshlink/app/data/transport/framing/BleFragments.kt
+?? app/src/main/java/com/meshlink/app/domain/network/
+?? app/src/main/java/com/meshlink/app/domain/notifications/
+?? app/src/main/java/com/meshlink/app/domain/routing/AodvEngine.kt
+?? app/src/main/java/com/meshlink/app/presentation/viewmodels/SimulationCommand.kt
+?? app/src/main/java/com/meshlink/app/ui/components/DemoTopologyPanel.kt
+?? app/src/main/java/com/meshlink/app/ui/components/DestinationPicker.kt
+?? app/src/main/java/com/meshlink/app/ui/screens/SettingsScreen.kt
+?? app/src/main/res/drawable/
+?? app/src/test/java/com/meshlink/app/data/transport/BleConnectionPolicyTest.kt
+?? app/src/test/java/com/meshlink/app/data/transport/DynamicSimulationTest.kt
+?? app/src/test/java/com/meshlink/app/data/transport/framing/BleFragmentsTest.kt
+?? app/src/test/java/com/meshlink/app/domain/network/
+?? app/src/test/java/com/meshlink/app/domain/notifications/
+?? app/src/test/java/com/meshlink/app/domain/routing/AodvEngineTest.kt
+?? app/src/test/java/com/meshlink/app/ui/
+?? verification/

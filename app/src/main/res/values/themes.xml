@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.MeshLink" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F6F8FC</item>
+        <item name="android:statusBarColor">#F6F8FC</item>
+        <item name="android:navigationBarColor">#F6F8FC</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+    <style name="Theme.MeshLink.Light" parent="Theme.MeshLink" />
+    <style name="Theme.MeshLink.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0F172A</item>
         <item name="android:statusBarColor">#0F172A</item>
         <item name="android:navigationBarColor">#0F172A</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CallReceived
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Shield
@@ -56,9 +57,9 @@ import com.meshlink.app.presentation.viewmodels.MeshUiState
 import com.meshlink.app.ui.theme.CodeLogBackground
 import com.meshlink.app.ui.theme.MeshAmberWarning
 import com.meshlink.app.ui.theme.MeshCyanPrimary
-import com.meshlink.app.ui.theme.MeshDarkBackground
-import com.meshlink.app.ui.theme.MeshDarkSurface
-import com.meshlink.app.ui.theme.MeshDarkSurfaceVariant
+import com.meshlink.app.ui.theme.MeshBackground
+import com.meshlink.app.ui.theme.MeshSurface
+import com.meshlink.app.ui.theme.MeshSurfaceVariant
 import com.meshlink.app.ui.theme.MeshGreenAccent
 import com.meshlink.app.ui.theme.MeshPurpleAccent
 import com.meshlink.app.ui.theme.TextPrimary
@@ -78,7 +79,7 @@ fun MessagingScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(MeshDarkBackground)
+            .background(MeshBackground)
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -86,10 +87,11 @@ fun MessagingScreen(
         // MESSAGE COMPOSER CARD
         // =========================================================================
         item {
+            if (uiState.notificationTapMessage.isNotBlank()) Text(uiState.notificationTapMessage, color = TextSecondary)
             Spacer(modifier = Modifier.height(4.dp))
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MeshDarkSurface),
+                colors = CardDefaults.cardColors(containerColor = MeshSurface),
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -122,63 +124,20 @@ fun MessagingScreen(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // Destination selection chips
+                    com.meshlink.app.ui.components.DestinationPicker(
+                        selectedIds = uiState.selectedDestinationNodeIds,
+                        options = uiState.destinations, onSelect = onDestinationSelected
+                    )
                     Text(
-                        text = "Select Destination Node:",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary
+                        if (uiState.destinations.isEmpty()) "No other nodes known. Start networking and wait for peer discovery."
+                        else if (uiState.isNetworkingActive) "Discovery active · remote announcements refresh about every 30 seconds"
+                        else "Networking stopped · remembered nodes may be unreachable",
+                        style = MaterialTheme.typography.bodySmall, color = TextSecondary
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    val destinationCandidates = (uiState.connectedNodes + uiState.discoveredNodes)
-                        .map { it.nodeId to it.nodeName }
-                        .toMutableList()
-
-                    if (destinationCandidates.none { it.first == "NODE-C" }) {
-                        destinationCandidates.add("NODE-C" to "Node C (Multi-Hop)")
+                    if (uiState.selectedDestinationNodeIds.size > 1) {
+                        Text("Each recipient gets a separate message and delivery status.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        if (uiState.isCrcErrorSimulationArmed) Text("CRC test affects only the next outgoing frame, not every recipient.", style = MaterialTheme.typography.bodySmall, color = MeshAmberWarning)
                     }
-                    if (destinationCandidates.none { it.first == "NODE-B" }) {
-                        destinationCandidates.add("NODE-B" to "Node B (Relay)")
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        destinationCandidates.distinctBy { it.first }.forEach { (nodeId, name) ->
-                            val isSelected = uiState.selectedDestinationNodeId.equals(nodeId, ignoreCase = true)
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = { onDestinationSelected(nodeId) },
-                                label = { Text(name) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MeshCyanPrimary,
-                                    selectedLabelColor = MeshDarkBackground,
-                                    containerColor = MeshDarkSurfaceVariant,
-                                    labelColor = TextPrimary
-                                )
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = uiState.selectedDestinationNodeId,
-                        onValueChange = onDestinationSelected,
-                        label = { Text("Target Destination Node ID") },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MeshCyanPrimary,
-                            unfocusedBorderColor = TextSecondary,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
                     Spacer(modifier = Modifier.height(8.dp))
 
                     // TTL Slider
@@ -208,7 +167,7 @@ fun MessagingScreen(
                         colors = SliderDefaults.colors(
                             thumbColor = MeshCyanPrimary,
                             activeTrackColor = MeshCyanPrimary,
-                            inactiveTrackColor = MeshDarkSurfaceVariant
+                            inactiveTrackColor = MeshSurfaceVariant
                         )
                     )
 
@@ -217,7 +176,7 @@ fun MessagingScreen(
                         value = uiState.messageInputText,
                         onValueChange = onMessageInputChanged,
                         label = { Text("Payload / Message Content") },
-                        placeholder = { Text("e.g. Hello Node C through Node B!") },
+                        placeholder = { Text("Enter a message for the selected recipients") },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = MeshCyanPrimary,
                             unfocusedBorderColor = TextSecondary,
@@ -235,7 +194,7 @@ fun MessagingScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(
-                                if (uiState.isCrcErrorSimulationArmed) MeshAmberWarning.copy(alpha = 0.15f) else MeshDarkSurfaceVariant,
+                                if (uiState.isCrcErrorSimulationArmed) MeshAmberWarning.copy(alpha = 0.15f) else MeshSurfaceVariant,
                                 RoundedCornerShape(8.dp)
                             )
                             .padding(horizontal = 10.dp, vertical = 6.dp),
@@ -280,17 +239,17 @@ fun MessagingScreen(
                     Button(
                         onClick = onSendMessage,
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = uiState.messageInputText.isNotBlank() && uiState.selectedDestinationNodeId.isNotBlank(),
+                        enabled = uiState.isNetworkingActive && uiState.messageInputText.isNotBlank() && uiState.destinations.any { it.id in uiState.selectedDestinationNodeIds },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (uiState.isCrcErrorSimulationArmed) MeshAmberWarning else MeshGreenAccent,
-                            contentColor = MeshDarkBackground
+                            contentColor = MaterialTheme.colorScheme.onPrimary
                         ),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Icon(imageVector = Icons.Default.Send, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (uiState.isCrcErrorSimulationArmed) "Send Corrupted Frame (Test)" else "Send via BLE GATT Mesh",
+                            text = if (uiState.isCrcErrorSimulationArmed) "Send Corrupted Frame (Test)" else "Send to ${uiState.selectedDestinationNodeIds.size} ${if (uiState.selectedDestinationNodeIds.size == 1) "recipient" else "recipients"}",
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -327,6 +286,12 @@ fun MessagingScreen(
         // =========================================================================
         // MESSAGE HISTORY ITEMS
         // =========================================================================
+        item {
+            Text("Routes · ${uiState.connectedNodes.size} direct neighbors · ${uiState.knownNodes.size} known nodes", color = TextSecondary)
+            uiState.routes.forEach { route ->
+                Text("${route.destination.take(12)} via ${route.nextHop.take(12)} · ${route.hops} hops · ${if (route.valid) "valid" else "expired / invalid"}", color = TextSecondary, fontSize = 11.sp)
+            }
+        }
         if (uiState.messages.isEmpty()) {
             item {
                 Box(
@@ -347,6 +312,7 @@ fun MessagingScreen(
                 MessageCard(
                     packet = packet,
                     currentNodeId = uiState.currentNode.nodeId,
+                    status = uiState.deliveryStatuses[packet.messageId],
                     onInspect = { onInspectPacket(packet) }
                 )
             }
@@ -362,112 +328,103 @@ fun MessagingScreen(
 private fun MessageCard(
     packet: MessagePacket,
     currentNodeId: String,
+    status: String?,
     onInspect: () -> Unit
 ) {
     val isDeliveredHere = packet.destinationId.equals(currentNodeId, ignoreCase = true)
     val isSentFromHere = packet.sourceId.equals(currentNodeId, ignoreCase = true)
+    val failed = isSentFromHere && status?.startsWith("Failed") == true
+    val confirmed = isSentFromHere && status?.startsWith("Delivered") == true
+    val timedOut = failed && status?.contains("acknowledgment timed out", ignoreCase = true) == true
+    val title = when {
+        isDeliveredHere -> "Received"
+        timedOut -> "Delivery unconfirmed"
+        failed -> "Message not delivered"
+        confirmed -> "Delivered"
+        isSentFromHere -> "Sending…"
+        else -> "Relayed"
+    }
+    val accent = when {
+        failed -> MaterialTheme.colorScheme.error
+        isDeliveredHere || confirmed -> MeshGreenAccent
+        else -> MaterialTheme.colorScheme.primary
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MeshDarkSurface),
-        shape = RoundedCornerShape(12.dp)
+        colors = CardDefaults.cardColors(containerColor = MeshSurface),
+        shape = RoundedCornerShape(16.dp)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (isDeliveredHere) Icons.Default.CallReceived else Icons.Default.Send,
-                        contentDescription = null,
-                        tint = if (isDeliveredHere) MeshGreenAccent else MeshCyanPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (isDeliveredHere) "DELIVERED HERE" else if (isSentFromHere) "OUTGOING" else "RELAYED",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isDeliveredHere) MeshGreenAccent else MeshCyanPrimary
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // CRC Status Badge
-                    Box(
-                        modifier = Modifier
-                            .background(MeshGreenAccent.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 5.dp, vertical = 1.dp)
-                    ) {
-                        Text(
-                            text = "CRC: PASS",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            color = MeshGreenAccent
-                        )
-                    }
-                }
-
-                IconButton(
-                    onClick = onInspect,
-                    modifier = Modifier.size(24.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = "Inspect Packet",
-                        tint = MeshCyanPrimary
-                    )
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Reserve the action's touch target; text wraps only inside its own weighted column.
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = when {
+                        failed -> Icons.Default.ErrorOutline
+                        isDeliveredHere || confirmed -> Icons.Default.CheckCircle
+                        else -> Icons.Default.Send
+                    },
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold, color = accent)
+                IconButton(onClick = onInspect, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Default.Info, contentDescription = "Inspect packet details", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Text(packet.payload, style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
 
-            Text(
-                text = packet.payload,
-                style = MaterialTheme.typography.bodyLarge,
-                color = TextPrimary,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Route summary bar
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(CodeLogBackground, RoundedCornerShape(6.dp))
-                    .padding(8.dp)
-            ) {
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Src: ${packet.sourceId} ➔ Dst: ${packet.destinationId}",
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = TextSecondary
-                        )
-                        Text(
-                            text = "Hops: ${packet.hopCount} | TTL: ${packet.ttl}",
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = MeshCyanPrimary
-                        )
-                    }
-                    if (packet.routeHistory.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Path: ${packet.routeHistory.joinToString(" ➔ ")}",
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = MeshGreenAccent
-                        )
-                    }
+            if (failed) {
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(10.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        if (timedOut) "No delivery confirmation received. The message may still have reached the recipient."
+                        else status.orEmpty().removePrefix("Failed:").trim(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        "Check that mesh networking is on and a neighbor is connected before sending again.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
                 }
+            } else if (isSentFromHere && !confirmed && status != null) {
+                Text(status, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            }
+
+            // Each technical field gets the full width, including long node IDs and large font sizes.
+            Column(
+                Modifier.fillMaxWidth().background(CodeLogBackground, RoundedCornerShape(10.dp)).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text("From: ${packet.sourceName.ifBlank { packet.sourceId }}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text("To: ${packet.destinationName.ifBlank { packet.destinationId }}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text(
+                    "Hops: ${packet.hopCount}  ·  TTL: ${packet.ttl}",
+                    style = MaterialTheme.typography.bodySmall, color = TextSecondary
+                )
+                if (packet.routeHistory.isNotEmpty()) {
+                    Text(
+                        "${if (failed) "Recorded path" else "Path"}: ${packet.routeHistory.joinToString(" → ")}",
+                        style = MaterialTheme.typography.bodySmall, color = TextSecondary
+                    )
+                }
+                Text(
+                    if (isDeliveredHere) "CRC verified on receipt"
+                    else if (isSentFromHere) "CRC generated locally · not a delivery confirmation"
+                    else "CRC checked at this relay · not a delivery confirmation",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isDeliveredHere) MeshGreenAccent else TextSecondary
+                )
             }
         }
     }
