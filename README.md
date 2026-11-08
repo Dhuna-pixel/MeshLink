@@ -171,3 +171,13 @@ Use disposable test installations: instrumentation creates profiles/groups and t
 - `verification/` and earlier `*_REPORT.md` files: historical development evidence; screenshots may show features removed from the current Android UI.
 
 For a useful bug report, include the build/version, Android versions and phone models, Nearby connection labels, the exact message failure reason, whether the problem affects personal or group messages, and relevant diagnostic events. Remove private message contents and personal identifiers before sharing logs.
+
+## Copyright
+
+Copyright © 2026 MeshLink contributors. All rights reserved.
+
+MeshLink is a proprietary software project made publicly available for viewing and evaluation.
+
+No license is granted to reproduce, modify, redistribute, sublicense, or commercially use the source code without prior written permission from the respective copyright holders.
+
+Third-party components remain subject to their own licenses.
