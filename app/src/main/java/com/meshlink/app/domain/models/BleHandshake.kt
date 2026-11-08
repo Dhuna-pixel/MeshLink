@@ -17,7 +17,8 @@ data class BleHandshake(
     val protocolVersion: Int = 1,
     val nodeId: String,
     val displayName: String,
-    val isRelayCapable: Boolean = true
+    val isRelayCapable: Boolean = true,
+    val profile: String? = null
 ) {
     companion object {
         private val json = Json {

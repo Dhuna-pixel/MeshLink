@@ -1,5 +1,7 @@
 package com.meshlink.app.data.transport
 
+import com.meshlink.app.data.transport.framing.encode
+
 import com.meshlink.app.data.transport.framing.BleFragments
 import com.meshlink.app.data.transport.framing.FragmentAssembler
 import com.meshlink.app.data.transport.framing.MeshLinkFrame

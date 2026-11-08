@@ -20,14 +20,27 @@ class BackgroundNetworkingTest {
         val app = instrumentation.targetContext.applicationContext as MeshLinkApp
         val required = if (Build.VERSION.SDK_INT >= 31) listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE)
             else listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        for (permission in required) {
+            if (ContextCompat.checkSelfPermission(app, permission) != PackageManager.PERMISSION_GRANTED) {
+                instrumentation.uiAutomation.executeShellCommand("pm grant ${app.packageName} $permission").use { fd ->
+                    java.io.FileInputStream(fd.fileDescriptor).use { it.readBytes() }
+                }
+            }
+        }
         assumeTrue(required.all { ContextCompat.checkSelfPermission(app, it) == PackageManager.PERMISSION_GRANTED })
         assumeTrue((app.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter?.isEnabled == true)
         val repository = app.meshRepository
+        val original = repository.currentNode.value
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             try {
                 scenario.onActivity { repository.requestNetworkingStart() }
                 await { repository.isNetworkingActive.value }
                 val starts = repository.networkLogs.value.count { it.message.startsWith("Starting networking") }
+                scenario.onActivity { repository.updateNodeIdentity(original.nodeId, "Field team", "At the shelter") }
+                val revised = repository.identity.profile(repository.currentNode.value).profile
+                assertEquals("Field team", revised.card.name)
+                assertEquals("At the shelter", revised.about)
+                assertEquals(original.nodeId, revised.card.id)
                 scenario.moveToState(Lifecycle.State.CREATED)
                 Thread.sleep(1500)
                 assertTrue(repository.isNetworkingActive.value)
@@ -41,7 +54,10 @@ class BackgroundNetworkingTest {
                 await { !repository.isNetworkingActive.value }
                 assertTrue(repository.connectedNodes.value.isEmpty())
                 assertTrue(repository.routes.value.isEmpty())
-            } finally { instrumentation.runOnMainSync { repository.requestNetworkingStop() } }
+            } finally { instrumentation.runOnMainSync {
+                repository.updateNodeIdentity(original.nodeId, original.nodeName, original.about)
+                repository.requestNetworkingStop()
+            } }
         }
     }
     private fun await(condition: () -> Boolean) {

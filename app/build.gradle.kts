@@ -12,8 +12,8 @@ android {
         applicationId = "com.meshlink.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0-review2"
+        versionCode = 2
+        versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -80,13 +80,11 @@ dependencies {
     // Navigation Compose
     implementation("androidx.navigation:navigation-compose:2.7.7")
 
-    // Google Play Services Nearby Connections (P2P Mesh Ad-Hoc Networking)
-    implementation("com.google.android.gms:play-services-nearby:19.3.0")
+
 
     // Kotlin Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.0")
 
     // Serialization (JSON serialization for structured MessagePackets)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")

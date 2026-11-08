@@ -37,14 +37,14 @@ fun DestinationPicker(selectedIds: Set<String>, options: List<DestinationOption>
                     items(options, key = { it.id }) { option ->
                         Row(
                             Modifier.fillMaxWidth()
-                                .toggleable(value = option.id in selectedIds, role = Role.Checkbox, onValueChange = { onSelect(option.id) })
+                                .toggleable(value = option.id in selectedIds, role = Role.Checkbox, enabled = option.canMessage, onValueChange = { onSelect(option.id) })
                                 .padding(vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Checkbox(checked = option.id in selectedIds, onCheckedChange = null)
+                            Checkbox(checked = option.id in selectedIds, onCheckedChange = null, enabled = option.canMessage)
                             Spacer(Modifier.width(8.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(option.name, style = MaterialTheme.typography.bodyLarge)
+                                ParticipantName(option.name, option.verified, MaterialTheme.typography.bodyLarge)
                                 Text(option.status, style = MaterialTheme.typography.bodySmall)
                                 Text("ID: ${option.id}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }

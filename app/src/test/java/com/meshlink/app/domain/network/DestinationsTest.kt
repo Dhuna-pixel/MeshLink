@@ -5,6 +5,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DestinationsTest {
+    @Test fun everyoneIncludesUnverifiedRemoteParticipantsAndExcludesBlockedOrAbsentPeople() {
+        val options = listOf(DestinationOption("a","A","Direct",verified = true),
+            DestinationOption("b","B","Remote"), DestinationOption("c","C","Blocked",canMessage = false, blocked = true),
+            DestinationOption("d","D","Previous participant"))
+        assertEquals(setOf("a","b"),Destinations.everyone(options,setOf("a","b","c")))
+    }
     @Test fun excludesLocalDeduplicatesAndKeepsDuplicateNamesAsSeparateIds() {
         val list=Destinations.list("local",listOf(Node("local"),Node("p","Same")),listOf(Node("p","Same"),Node("q","Same")),emptyList(),1000)
         assertEquals(listOf("p","q"),list.map { it.id });assertTrue(list.first().status.contains("Directly"))

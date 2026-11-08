@@ -9,7 +9,7 @@ data class RouteControl(
     val kind: String, val origin: String, val destination: String = "",
     val requestId: String = UUID.randomUUID().toString(), val sequence: Long = 0,
     val destinationSequence: Long = -1, val hops: Int = 0, val ttl: Int = 16,
-    val name: String = "", val unreachable: Map<String, Long> = emptyMap()
+    val name: String = "", val unreachable: Map<String, Long> = emptyMap(), val profile: String? = null
 )
 
 data class AodvRoute(val destination: String, val nextHop: String, val hops: Int,
@@ -28,19 +28,34 @@ class AodvEngine(
     private val learned: (String, String) -> Unit,
     private val log: (String) -> Unit,
     private val now: () -> Long = { System.currentTimeMillis() },
-    private val acknowledged: (String, List<String>) -> Unit = { _, _ -> }
+    private val acknowledged: (String, List<String>) -> Unit = { _, _ -> },
+    private var profile: String? = null
 ) {
     private val neighbors = mutableSetOf<String>()
     private val routes = linkedMapOf<String, AodvRoute>()
     private val seenRequests = linkedMapOf<String, Long>()
     private val seenData = linkedMapOf<String, Long>()
     private val seenAnnouncements = linkedMapOf<String, Long>()
-    private data class Pending(val packet: MessagePacket, val started: Long, var attempt: Int = 0, var retryAt: Long = 0)
+    private data class Pending(val packet: MessagePacket, val started: Long, var attempt: Int = 0, var retryAt: Long = 0, var awaitingTransfer: Boolean = false)
     private val pending = linkedMapOf<String, Pending>()
     private var sequence = now().coerceAtLeast(0)
     private var lastAnnouncement = 0L
-    @Synchronized fun rename(displayName: String) { name = displayName; if (neighbors.isNotEmpty()) announce() }
+    @Synchronized fun rename(displayName: String, signedProfile: String? = profile) {
+        name = displayName
+        profile = signedProfile
+        if (neighbors.isNotEmpty()) announce()
+    }
+    @Synchronized fun hasSendCapacity() = pending.size < 64
     @Synchronized fun cancelPending(reason: String) { pending.keys.toList().forEach { status(it, reason) }; pending.clear() }
+    @Synchronized fun cancelMessage(messageId: String, reason: String) {
+        if (pending.remove(messageId) != null) status(messageId, reason)
+    }
+    @Synchronized fun cancelDestination(destination: String) {
+        pending.filterValues { it.packet.destinationId == destination }.keys.toList().forEach {
+            pending.remove(it)
+            status(it, "Failed: participant blocked")
+        }
+    }
     @Synchronized fun snapshot() = routes.values.map { it.copy(valid = it.valid && it.expires > now(), precursors = it.precursors.toMutableSet()) }
     private fun route(dest: String) = routes[dest]?.takeIf { it.valid && it.expires > now() && it.nextHop in neighbors }
     private fun remember(cache: MutableMap<String, Long>, key: String): Boolean {
@@ -66,6 +81,9 @@ class AodvEngine(
     @Synchronized fun neighborUp(peer: String) { neighbors.add(peer); announce() }
     @Synchronized fun neighborDown(peer: String) {
         neighbors.remove(peer)
+        invalidateVia(peer)
+    }
+    private fun invalidateVia(peer: String) {
         val broken = routes.values.filter { it.valid && it.nextHop == peer }
         broken.forEach { it.valid = false }
         val unreachable = broken.associate { it.destination to (it.sequence + 1) }
@@ -80,7 +98,7 @@ class AodvEngine(
     }
     private fun announce() {
         lastAnnouncement = now()
-        control(RouteControl("ANNOUNCE", id, name = name, ttl = 8))
+        control(RouteControl("ANNOUNCE", id, name = name, ttl = 8, profile = profile))
     }
     @Synchronized fun send(packet: MessagePacket) {
         if (pending.size >= 64) { status(packet.messageId, "Failed: outgoing queue full"); return }
@@ -88,27 +106,37 @@ class AodvEngine(
         status(packet.messageId, "Discovering route")
         tick()
     }
+    /** Queue admission is not an ATT receipt. Start the ACK wait after the wire transfer finishes. */
+    @Synchronized fun transmitted(messageId: String) {
+        pending[messageId]?.takeIf { it.awaitingTransfer }?.let {
+            it.awaitingTransfer = false
+            it.retryAt = now() + 30_000
+        }
+    }
     @Synchronized fun tick() {
         routes.values.filter { it.expires <= now() }.forEach { it.valid = false }
         if (now() - lastAnnouncement >= 30_000 && neighbors.isNotEmpty()) announce()
         val discovering = mutableSetOf<String>()
         for ((key, p) in pending.toMap()) {
-            if (now() - p.started >= 35_000 || (p.attempt >= 3 && now() >= p.retryAt)) {
-                pending.remove(key); status(key, "Failed: delivery acknowledgment timed out"); continue
+            if (now() - p.started >= 120_000 || (p.attempt >= 3 && now() >= p.retryAt)) {
+                pending.remove(key); status(key, if (neighbors.isEmpty()) "Failed: no connected mesh devices" else "Failed: delivery acknowledgment timed out"); continue
             }
-            if (now() < p.retryAt) continue
+            if (now() < p.retryAt || neighbors.isEmpty()) continue
             val r = route(p.packet.destinationId)
             if (r != null) {
-                if (transmit(r.nextHop, p.packet)) status(key, "Queued for next hop; awaiting destination ACK")
-                else neighborDown(r.nextHop)
-                p.attempt++; p.retryAt = now() + 10_000
+                val accepted = transmit(r.nextHop, p.packet)
+                p.awaitingTransfer = accepted
+                if (accepted) status(key, "Sending over Bluetooth")
+                else invalidateVia(r.nextHop)
+                p.attempt++
+                p.retryAt = now() + if (accepted) 60_000 else 5_000
             } else if (discovering.add(p.packet.destinationId)) {
                 sequence++
                 val c = RouteControl("RREQ", id, p.packet.destinationId, sequence = sequence,
                     destinationSequence = routes[p.packet.destinationId]?.sequence ?: -1)
                 remember(seenRequests, "$id:${c.requestId}")
                 control(c); log("RREQ generated for ${c.destination}")
-                p.attempt++; p.retryAt = now() + 5_000
+                p.attempt++; p.retryAt = now() + 15_000
             }
         }
     }
@@ -117,6 +145,10 @@ class AodvEngine(
         val c = packet.control
         if (c != null) {
             if (c.ttl !in 1..16 || c.hops !in 0..15 || c.origin.length !in 1..80 || c.sequence < 0) return
+            if (c.sequence == Long.MAX_VALUE || c.destinationSequence !in -1 until Long.MAX_VALUE ||
+                c.destination.length > 80 || c.requestId.length !in 1..160 || c.unreachable.size > 64 ||
+                c.unreachable.any { (dest, seq) -> dest.length !in 1..80 || seq !in 0 until Long.MAX_VALUE } ||
+                (c.kind in setOf("RREQ", "RREP") && c.destination.isBlank())) return
             when (c.kind) {
                 "ANNOUNCE" -> if (c.origin != id && remember(seenAnnouncements, c.requestId)) {
                     learned(c.origin, c.name.take(64)); if (c.ttl > 1) control(c.copy(ttl = c.ttl - 1), except = from)
@@ -157,7 +189,13 @@ class AodvEngine(
                 val p = pending[packet.ackFor]
                 if (p != null && p.packet.destinationId == packet.sourceId) { pending.remove(packet.ackFor); acknowledged(packet.ackFor, packet.returnPath.reversed()); status(packet.ackFor, "Delivered (destination ACK)") }
             } else {
-                if (remember(seenData, packet.messageId)) delivered(arrived) else log("Duplicate data rejected")
+                val dataKey = "${packet.sourceId.length}:${packet.sourceId}${packet.messageId}"
+                if (remember(seenData, dataKey)) {
+                    try { delivered(arrived) } catch (failure: Exception) {
+                        seenData.remove(dataKey)
+                        throw failure
+                    }
+                } else log("Duplicate data rejected")
                 val ack = MessagePacket(UUID.randomUUID().toString(), id, name, packet.sourceId, payload = "", ttl = 16,
                     routeHistory = listOf(id), ackFor = packet.messageId, returnPath = arrived.routeHistory.reversed())
                 transmit(from, ack)
@@ -175,8 +213,8 @@ class AodvEngine(
             val r = route(packet.destinationId)
             if (r != null && r.nextHop != from && r.nextHop !in arrived.routeHistory) {
                 r.precursors.add(from)
-                if (!transmit(r.nextHop, arrived)) neighborDown(r.nextHop)
-                log("Message forwarded to ${r.nextHop}")
+                if (transmit(r.nextHop, arrived)) log("Message forwarded to ${r.nextHop}")
+                else invalidateVia(r.nextHop)
             } else control(RouteControl("RERR", id, unreachable = mapOf(packet.destinationId to ((routes[packet.destinationId]?.sequence ?: 0) + 1))), from)
         }
     }

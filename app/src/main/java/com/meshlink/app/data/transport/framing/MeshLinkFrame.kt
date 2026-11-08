@@ -33,6 +33,8 @@ object MeshLinkFrame {
     const val FRAME_TYPE_HELLO_HANDSHAKE: Byte = 0x02
     const val FRAME_TYPE_HEARTBEAT: Byte = 0x03
 
+    const val FRAME_TYPE_TLS: Byte = 0x04
+
     const val HEADER_SIZE = 4
     const val CRC_SIZE = 2
     const val MIN_FRAME_SIZE = HEADER_SIZE + CRC_SIZE // 6 bytes (0-length payload)
@@ -43,13 +45,11 @@ object MeshLinkFrame {
      *
      * @param frameType Frame category (e.g. [FRAME_TYPE_ROUTED_PACKET] or [FRAME_TYPE_HELLO_HANDSHAKE])
      * @param payload Raw payload bytes (e.g. serialized JSON)
-     * @param corruptForTesting If true, intentionally corrupts the payload byte to simulate transmission error
      * @return Full wire-ready byte array containing [Header + Payload + CRC16]
      */
     fun encode(
         frameType: Byte,
         payload: ByteArray,
-        corruptForTesting: Boolean = false
     ): ByteArray {
         val payloadLength = payload.size
         if (payloadLength > MAX_PAYLOAD_SIZE) {
@@ -74,20 +74,7 @@ object MeshLinkFrame {
         // 4. Append 2-byte CRC (Big Endian)
         buffer.putShort(calculatedCrc.toShort())
 
-        val result = buffer.array()
-
-        // Test mode: Intentionally flip a payload bit/byte to demonstrate CRC failure
-        if (corruptForTesting) {
-            if (payloadLength > 0) {
-                // Invert a byte in the payload area
-                result[HEADER_SIZE] = (result[HEADER_SIZE].toInt() xor 0xFF).toByte()
-            } else {
-                // Invert a CRC byte
-                result[totalSize - 1] = (result[totalSize - 1].toInt() xor 0xFF).toByte()
-            }
-        }
-
-        return result
+        return buffer.array()
     }
 
     /**
@@ -142,7 +129,7 @@ object MeshLinkFrame {
         }
 
         val frameType = frameBytes[1]
-        if (frameType !in FRAME_TYPE_ROUTED_PACKET..FRAME_TYPE_HEARTBEAT) return FrameResult.CorruptedHeader("Unsupported frame type")
+        if (frameType !in FRAME_TYPE_ROUTED_PACKET..FRAME_TYPE_TLS) return FrameResult.CorruptedHeader("Unsupported frame type")
         val payloadLength = ((frameBytes[2].toInt() and 0xFF) shl 8) or (frameBytes[3].toInt() and 0xFF)
 
         if (payloadLength > MAX_PAYLOAD_SIZE) {
@@ -216,7 +203,7 @@ class FrameReassembler {
             }
 
             val frameType = currentBytes[readIndex + 1]
-            if (frameType !in MeshLinkFrame.FRAME_TYPE_ROUTED_PACKET..MeshLinkFrame.FRAME_TYPE_HEARTBEAT) {
+            if (frameType !in MeshLinkFrame.FRAME_TYPE_ROUTED_PACKET..MeshLinkFrame.FRAME_TYPE_TLS) {
                 // Invalid frame type, skip this byte and resync
                 readIndex++
                 continue

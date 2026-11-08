@@ -1,5 +1,7 @@
 package com.meshlink.app.domain.routing
 
+import com.meshlink.app.data.transport.framing.encode
+
 import com.meshlink.app.domain.models.MessagePacket
 import com.meshlink.app.data.transport.framing.MeshLinkFrame
 import com.meshlink.app.utils.JsonSerializer
@@ -49,6 +51,54 @@ class AodvEngineTest {
         flush()
     }
     @Test fun directDeliveryAndAck() { val n=chain(2); n.send("B"); assertEquals(1,n.deliveries.single().hopCount); assertEquals("Delivered (destination ACK)",n.statuses["message"]) }
+    @Test fun temporarySendFailureKeepsNeighborAvailableForRediscovery() {
+        val n = chain(2)
+        n.send("B", id = "first")
+        val link = setOf("A","B")
+        n.links.remove(link) // A refused write, without a transport disconnection event.
+        n.send("B", id = "retry")
+        n.links.add(link)
+        n.time += 10001
+        n.nodes.getValue("A").tick()
+        n.flush()
+        assertEquals("Delivered (destination ACK)", n.statuses["retry"])
+    }
+    @Test fun slowBluetoothTransferDoesNotExpireBeforeItsAck() {
+        val n = chain(2)
+        n.send("B", id = "warmup")
+        val sender = n.nodes.getValue("A")
+        sender.send(MessagePacket("slow", "A", destinationId = "B", payload = "hello", routeHistory = listOf("A")))
+        // Queue acceptance is not completion: a low-MTU BLE transfer can take over 35 seconds.
+        repeat(9) { n.time += 5000; sender.tick() }
+        assertFalse(n.statuses.getValue("slow").startsWith("Failed"))
+        assertEquals(1, n.queue.count { it.third.messageId == "slow" })
+        n.flush()
+        assertEquals("Delivered (destination ACK)", n.statuses["slow"])
+    }
+    @Test fun messageWaitsForReconnectWithoutBurningRouteAttempts() {
+        val n = chain(2)
+        n.unlink("A", "B")
+        n.send("B", id = "waiting")
+        repeat(10) { n.time += 5000; n.nodes.getValue("A").tick() }
+        assertFalse(n.statuses.getValue("waiting").startsWith("Failed"))
+        n.link("A", "B")
+        n.nodes.getValue("A").tick()
+        n.flush()
+        assertEquals("Delivered (destination ACK)", n.statuses["waiting"])
+    }
+    @Test fun acknowledgmentTimeoutStartsAfterActualTransfer() {
+        val n = chain(2)
+        n.send("B", id = "warmup")
+        val sender = n.nodes.getValue("A")
+        sender.send(MessagePacket("slow", "A", destinationId = "B", payload = "hello", routeHistory = listOf("A")))
+        n.time += 45000
+        sender.transmitted("slow")
+        n.time += 20000
+        sender.tick()
+        assertEquals(1, n.queue.count { it.third.messageId == "slow" })
+        n.flush()
+        assertEquals("Delivered (destination ACK)", n.statuses["slow"])
+    }
     @Test fun threeNodeRelay() { val n=chain(3); n.send("C"); assertEquals(listOf("A","B","C"),n.deliveries.single().routeHistory) }
     @Test fun fourNodeRelay() { val n=chain(4); n.send("D"); assertEquals(3,n.deliveries.single().hopCount); assertEquals(5,n.deliveries.single().ttl); assertEquals(listOf("A","B","C","D"),n.confirmedPaths["message"]); assertEquals("B",n.nodes.getValue("A").snapshot().first { it.destination=="D" }.nextHop) }
     @Test fun shorterEligiblePath() {
@@ -87,7 +137,7 @@ class AodvEngineTest {
         assertTrue(n.deliveries.isEmpty())
     }
     @Test fun pendingTimeoutAndExpiration() {
-        val n=chain(2); n.send("missing"); repeat(8) { n.time+=5000; n.nodes.getValue("A").tick(); n.flush() }
+        val n=chain(2); n.send("missing"); repeat(25) { n.time+=5000; n.nodes.getValue("A").tick(); n.flush() }
         assertTrue(n.statuses.getValue("message").startsWith("Failed"))
         n.send("B",id="ok"); n.time+=61000; n.nodes.getValue("A").tick()
         assertFalse(n.nodes.getValue("A").snapshot().first { it.destination=="B" }.valid)

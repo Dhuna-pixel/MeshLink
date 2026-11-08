@@ -1,5 +1,7 @@
 package com.meshlink.app.domain.transport
 
+import com.meshlink.app.data.transport.framing.encode
+
 import com.meshlink.app.data.transport.framing.FrameReassembler
 import com.meshlink.app.data.transport.framing.MeshLinkFrame
 import com.meshlink.app.domain.crc.Crc16Ccitt

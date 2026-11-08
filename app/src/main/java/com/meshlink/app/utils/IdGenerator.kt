@@ -19,7 +19,7 @@ object IdGenerator {
      * Generates a unique message ID, e.g. "MSG-8B12"
      */
     fun generateMessageId(prefix: String = "MSG"): String {
-        val randomHex = UUID.randomUUID().toString().substring(0, 6).uppercase()
+        val randomHex = UUID.randomUUID().toString()
         return "$prefix-$randomHex"
     }
 }

@@ -31,7 +31,6 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.meshlink.app.data.transport.framing.FrameReassembler
 import com.meshlink.app.data.transport.framing.MeshLinkFrame
-import com.meshlink.app.domain.crc.Crc16Ccitt
 import com.meshlink.app.domain.models.BleHandshake
 import com.meshlink.app.domain.models.LogLevel
 import com.meshlink.app.domain.models.MessagePacket
@@ -39,6 +38,9 @@ import com.meshlink.app.domain.models.NetworkLogEntry
 import com.meshlink.app.domain.models.Node
 import com.meshlink.app.domain.models.NodeStatus
 import com.meshlink.app.utils.JsonSerializer
+import com.meshlink.app.security.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,7 +63,6 @@ import kotlinx.coroutines.sync.withLock
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Connection states for the explicit BLE Peer Connection State Machine.
@@ -84,6 +85,11 @@ enum class BleConnectionState {
 /**
  * Isolated per-peer session state for multi-peer BLE mesh communication.
  */
+internal sealed interface TlsEvent {
+    data class Incoming(val bytes: ByteArray): TlsEvent
+    data class Outgoing(val packet: MessagePacket): TlsEvent
+}
+
 class BlePeerSession(
     val device: BluetoothDevice,
     val address: String,
@@ -91,15 +97,22 @@ class BlePeerSession(
     var isSubscribed: Boolean = false,
     var nodeId: String? = null,
     var displayName: String? = null,
+    val expectedPeerId: String? = null,
+    val outgoing: Boolean = false,
     @Volatile var state: BleConnectionState = BleConnectionState.DISCOVERED,
     var negotiatedMtu: Int = 23,
     val reassembler: FragmentAssembler = FragmentAssembler(),
     @Volatile var completion: CompletableDeferred<Int>? = null,
-    @Volatile var helloSent: Boolean = false,
-    @Volatile var handshake: BleHandshake? = null,
     var lastSeen: Long = System.currentTimeMillis(),
     val txMutex: Mutex = Mutex()
 ) {
+    internal val tlsEvents = Channel<TlsEvent>(256)
+    internal var worker: Job? = null
+    internal val created = android.os.SystemClock.elapsedRealtime()
+    internal var rateStart = 0L
+    internal var receivedCount = 0
+    internal fun close() { tlsEvents.close(); worker?.cancel() }
+
     val usableChunkSize: Int
         get() = (negotiatedMtu - 3).coerceIn(20, 512)
 }
@@ -114,10 +127,10 @@ class BlePeerSession(
  * 4. Explicit 12-state Connection State Machine with application-level HELLO handshake.
  * 5. Dynamic negotiated MTU tracking and MTU-aware chunk fragmentation per peer.
  * 6. Per-peer serialized write queue with mutex to prevent GATT write collisions on relays.
- * 7. Intentional CRC error injection test mode for live demonstration.
  */
 class AndroidBleGattTransport(
     private val context: Context,
+    private val identity: Identity = Identity(context),
     private val maxConnections: Int = 4
 ) : MeshTransport {
 
@@ -147,7 +160,10 @@ class AndroidBleGattTransport(
     private val _isRunning = MutableStateFlow(false)
     override val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
-    private var localNode: Node? = null
+    @Volatile private var localNode: Node? = null
+    fun updateProfile(node: Node) {
+        if (node.nodeId == localNode?.nodeId) localNode = node
+    }
     private var watchdog: kotlinx.coroutines.Job? = null
 
     // Peripheral (GATT Server) components
@@ -160,13 +176,18 @@ class AndroidBleGattTransport(
     private var isScanning = false
 
     // Per-Peer Sessions: [DeviceAddress -> BlePeerSession]
+    val rejectedEndpoints = MutableStateFlow<Set<String>>(emptySet())
+    @Synchronized private fun reject(address: String) { rejectedEndpoints.value = (rejectedEndpoints.value + address).toList().takeLast(128).toSet() }
     private val peerSessions = ConcurrentHashMap<String, BlePeerSession>()
 
     // Node ID <-> Address mappings
     private val endpointToNodeMap = ConcurrentHashMap<String, Node>()
+    // Keep Android's scanned device handle, including its LE address type.
+    private val recentDevices = java.util.Collections.synchronizedMap(object : LinkedHashMap<String, BluetoothDevice>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, BluetoothDevice>?) = size > 128
+    })
     private val nodeToEndpointMap = ConcurrentHashMap<String, String>()
 
-    // Test mode: Intentionally corrupt the next outgoing frame's CRC
     @Volatile private var demoTopology = com.meshlink.app.domain.network.DemoTopology()
     fun configureDemo(topology: com.meshlink.app.domain.network.DemoTopology) {
         check(!_isRunning.value) { "Stop BLE before changing its permitted neighbors" }
@@ -180,24 +201,9 @@ class AndroidBleGattTransport(
     }
     private val transferId = AtomicInteger()
     private val serverTxMutex = Mutex()
-    private val queued = AtomicInteger()
     private val connectionPolicy = BleConnectionPolicy(maxConnections)
     private fun token(id: String) = MessageDigest.getInstance("SHA-256").digest(id.toByteArray()).take(8).toByteArray()
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
-    private val corruptNextCrc = AtomicBoolean(false)
-    private val corruptMessages = ConcurrentHashMap<String, Long>()
-
-    fun setCorruptNextCrc(corrupt: Boolean) {
-        corruptNextCrc.set(corrupt)
-        if (corrupt) {
-            emitLog(
-                tag = "TEST-MODE",
-                message = "CRC Error Simulation ARMED: Next transmitted frame will contain an intentional payload corruption.",
-                level = LogLevel.WARNING
-            )
-        }
-    }
-
     // =========================================================================
     // PERMISSIONS
     // =========================================================================
@@ -274,7 +280,7 @@ class AndroidBleGattTransport(
                 connectionPolicy.stale().filter { !peerSessions.containsKey(it) }.forEach { emitEvent(TransportEvent.NodeLost(it)) }
                 peerSessions.values.forEach { session ->
                     session.reassembler.expire()
-                    if (session.state != BleConnectionState.READY && System.currentTimeMillis() - session.lastSeen > 30_000) {
+                    if (BleConnectionPolicy.sessionExpired(android.os.SystemClock.elapsedRealtime() - session.created, session.state == BleConnectionState.READY)) {
                         disconnectNode(session.nodeId ?: session.address)
                     }
                 }
@@ -288,12 +294,14 @@ class AndroidBleGattTransport(
         watchdog?.cancel()
         watchdog = null
         connectionPolicy.reset()
+        recentDevices.clear()
 
         try {
             stopScanning()
             stopAdvertising()
 
             for ((_, session) in peerSessions) {
+                session.close()
                 try {
                     session.gatt?.disconnect()
                     session.gatt?.close()
@@ -372,10 +380,12 @@ class AndroidBleGattTransport(
             peerSessions[device.address]?.completion?.complete(status)
         }
         @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int): Unit = synchronized(this@AndroidBleGattTransport) {
             val address = device.address
             if (!_isRunning.value) return
-            if (newState == BluetoothProfile.STATE_CONNECTED && !peerSessions.containsKey(address) && peerSessions.size >= maxConnections) {
+            if (peerSessions[address]?.outgoing == true) return
+            if (newState == BluetoothProfile.STATE_CONNECTED) recentDevices[address] = device
+            if (newState == BluetoothProfile.STATE_CONNECTED && (connectionPolicy.paused(address) || (!peerSessions.containsKey(address) && peerSessions.size >= maxConnections))) {
                 gattServer?.cancelConnection(device); return
             }
             val session = peerSessions[address] ?: if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -393,10 +403,10 @@ class AndroidBleGattTransport(
                 session.completion?.complete(BluetoothGatt.GATT_FAILURE)
                 session.gatt?.close()
                 session.state = BleConnectionState.DISCONNECTED
-                peerSessions.remove(address)
+                peerSessions.remove(address)?.close()
                 val node = endpointToNodeMap.remove(address)
                 val nodeId = node?.nodeId ?: session.nodeId ?: address
-                nodeToEndpointMap.remove(nodeId)
+                nodeToEndpointMap.remove(nodeId, address)
 
                 emitLog(
                     tag = "BLE-DISCONNECT",
@@ -404,13 +414,15 @@ class AndroidBleGattTransport(
                     level = LogLevel.WARNING,
                     nodeId = nodeId
                 )
+                if (node != null && _isRunning.value) connectionPolicy.discovered(address)
                 emitEvent(TransportEvent.NodeDisconnected(nodeId, address))
             }
+            Unit
         }
 
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
-            val session = peerSessions[device.address]
+            val session = peerSessions[device.address]?.takeUnless { it.outgoing }
             if (session != null) {
                 if (mtu >= 23) session.negotiatedMtu = mtu
                 emitLog(
@@ -433,23 +445,13 @@ class AndroidBleGattTransport(
         ) {
             val valid = descriptor.uuid == CCCD_UUID && !preparedWrite && offset == 0 &&
                 (value?.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE) == true || value?.contentEquals(BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE) == true)
-            if (responseNeeded) gattServer?.sendResponse(device, requestId, if (valid) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED, offset, null)
-            if (!valid) return
-            if (descriptor.uuid == CCCD_UUID) {
-                val isSubscribed = value != null && value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
-                val session = peerSessions[device.address] ?: return
-                session.isSubscribed = isSubscribed
-
-                if (isSubscribed) {
-                    session.state = BleConnectionState.CHARACTERISTICS_READY
-                    emitLog(
-                        tag = "BLE-NOTIFY",
-                        message = "Central peer [${device.address}] subscribed to mesh notifications. State: CHARACTERISTICS_READY",
-                        level = LogLevel.INFO
-                    )
-                    // Peripheral sends HELLO handshake to Central
-                    sendHandshakeToPeer(session)
-                }
+            synchronized(this@AndroidBleGattTransport) {
+                val subscribing = valid && value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
+                val session = if (subscribing) beginSubscription(device) else null
+                if (valid && !subscribing) peerSessions[device.address]?.takeUnless { it.outgoing }?.isSubscribed = false
+                if (responseNeeded) gattServer?.sendResponse(device, requestId,
+                    if (valid) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED, offset, null)
+                session?.let(::sendHandshakeToPeer)
             }
         }
 
@@ -469,7 +471,7 @@ class AndroidBleGattTransport(
             }
             if (!valid) return
             if (characteristic.uuid == TX_CHAR_UUID && value != null) {
-                val session = peerSessions[device.address] ?: return
+                val session = peerSessions[device.address]?.takeUnless { it.outgoing } ?: return
                 handleIncomingRawChunk(value, session)
             }
         }
@@ -509,15 +511,15 @@ class AndroidBleGattTransport(
             .setConnectable(true)
             .build()
 
-        val advName = token(node.nodeId)
+        val identityToken = token(node.nodeId)
         val advertiseData = AdvertiseData.Builder()
             .setIncludeDeviceName(false) // Keep within 31-byte advertising packet limit
-            .addServiceUuid(ParcelUuid(SERVICE_UUID))
+            .addServiceData(ParcelUuid(SERVICE_UUID), identityToken)
             .build()
 
         val scanResponseData = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
-            .addServiceData(ParcelUuid(SERVICE_UUID), advName)
+            .addServiceUuid(ParcelUuid(SERVICE_UUID))
             .build()
 
         leAdvertiser?.startAdvertising(settings, advertiseData, scanResponseData, advertiseCallback)
@@ -570,9 +572,11 @@ class AndroidBleGattTransport(
             return
         }
 
-        val scanFilter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
+        val uuid = ParcelUuid(SERVICE_UUID)
+        val filters = listOf(
+            ScanFilter.Builder().setServiceData(uuid, byteArrayOf()).build(),
+            ScanFilter.Builder().setServiceUuid(uuid).build()
+        )
 
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
@@ -580,7 +584,7 @@ class AndroidBleGattTransport(
 
         isScanning = true
         emitLog(tag = "BLE-SCAN", message = "BLE scanning started for Service [$SERVICE_UUID]", level = LogLevel.SUCCESS)
-        leScanner?.startScan(listOf(scanFilter), scanSettings, scanCallback)
+        leScanner?.startScan(filters, scanSettings, scanCallback)
     }
 
     @SuppressLint("MissingPermission")
@@ -602,17 +606,25 @@ class AndroidBleGattTransport(
             val address = device.address
 
             if (!_isRunning.value) return
-            val remoteToken = result.scanRecord?.getServiceData(ParcelUuid(SERVICE_UUID)) ?: return
-            if (remoteToken.size != 8 || !demoTopology.permitsAdvertisement(remoteToken)) return
+            val record = result.scanRecord ?: return
+            val uuid = ParcelUuid(SERVICE_UUID)
+            val remoteToken = record.getServiceData(uuid)?.takeIf { it.size == 8 }
+            if (remoteToken == null && record.serviceUuids?.contains(uuid) != true) return
+            if (demoTopology.enabled && (remoteToken == null || !demoTopology.permitsAdvertisement(remoteToken))) return
+            recentDevices[address] = device
+            remoteToken?.let { connectionPolicy.advertised(hex(it), address) }
+            if (endpointToNodeMap.containsKey(address)) return
+
+            // Publish sightings even when pairing failed, the connection slots are full, or a retry is cooling down.
             val localToken = token(localNode?.nodeId ?: return)
-            if (remoteToken.contentEquals(localToken)) return
-            if (peerSessions.containsKey(address)) return
-            if (peerSessions.size >= maxConnections) return
-            if (!connectionPolicy.mayConnect(address, peerSessions.size)) return
-            val node = Node(nodeId = "discovered-${hex(remoteToken)}", nodeName = "MeshLink peer", endpointId = address, status = NodeStatus.DISCOVERED)
-            if (connectionPolicy.discovered(address)) emitEvent(TransportEvent.NodeDiscovered(node))
-            // Stable advertised identity hash selects one central for each pair.
-            if (hex(localToken) < hex(remoteToken)) connectToNode(node)
+            val conflictingId = remoteToken?.contentEquals(localToken) == true
+            val advertisedId = remoteToken?.let(::hex)
+            val node = Node(nodeId = "discovered-" + (advertisedId ?: address),
+                nodeName = if (conflictingId) "MeshLink peer · duplicate local ID" else "MeshLink peer",
+                endpointId = address, status = NodeStatus.DISCOVERED)
+            if (connectionPolicy.discovered(address, advertisedId)) emitEvent(TransportEvent.NodeDiscovered(node))
+            if (advertisedId != null && !connectionPolicy.paused(address, advertisedId) && !conflictingId && hex(localToken) < advertisedId &&
+                !peerSessions.containsKey(address) && connectionPolicy.mayConnect(address,peerSessions.size)) connectToNode(node)
 
         }
 
@@ -627,29 +639,49 @@ class AndroidBleGattTransport(
     // =========================================================================
     // GATT CLIENT CONNECTION (CENTRAL MODE)
     // =========================================================================
-    @SuppressLint("MissingPermission")
-    @Synchronized override fun connectToNode(targetNode: Node) {
-        if (!permittedCandidate(targetNode.nodeId)) {
-            emitLog("DEMO", "Forbidden direct connection blocked: ${targetNode.nodeId}", LogLevel.WARNING)
-            return
-        }
-        val address = targetNode.endpointId ?: run {
-            emitLog(
-                tag = "BLE-CONNECT",
-                message = "Cannot connect to '${targetNode.nodeName}': Missing BLE endpoint address",
-                level = LogLevel.ERROR
-            )
-            return
-        }
+    override fun connectToNode(targetNode: Node) { startConnection(targetNode, manual = false) }
 
-        if (!_isRunning.value || peerSessions.containsKey(address) || peerSessions.size >= maxConnections) return
-        if (!connectionPolicy.mayConnect(address, peerSessions.size)) return
-        connectionPolicy.attempted(address)
-        val session = peerSessions.computeIfAbsent(address) {
-            val device = bluetoothAdapter?.getRemoteDevice(address)
-                ?: throw IllegalStateException("Device $address not found")
-            BlePeerSession(device = device, address = address, nodeId = targetNode.nodeId, displayName = targetNode.nodeName)
+    fun connectManually(targetNode: Node): String = startConnection(targetNode, manual = true)
+
+    fun connectForMessage(id: String, name: String, fallbackAddress: String?, groupMessage: Boolean = false) {
+        if ((if (groupMessage) identity.linkCard(id) else identity.participant(id)) == null || nodeToEndpointMap[id]?.let { isReadyPeer(id, it) } == true) return
+        val address = connectionPolicy.advertisedAddress(hex(token(id))) ?: fallbackAddress ?: return
+        startConnection(Node(id, name, status = NodeStatus.DISCONNECTED, endpointId = address), manual = true)
+    }
+
+    @Synchronized fun disconnectManually(nodeId: String) {
+        nodeToEndpointMap[nodeId]?.let { connectionPolicy.pause(it, hex(token(nodeId))) }
+        disconnectNode(nodeId)
+    }
+
+    @SuppressLint("MissingPermission")
+    @Synchronized private fun startConnection(targetNode: Node, manual: Boolean): String {
+        val advertisedToken = if (targetNode.status == NodeStatus.DISCONNECTED) hex(token(targetNode.nodeId))
+            else targetNode.nodeId.removePrefix("discovered-")
+        val address = (if (manual) connectionPolicy.advertisedAddress(advertisedToken) else null)
+            ?: targetNode.endpointId ?: return "Waiting for a nearby Bluetooth address."
+        if (!_isRunning.value) return "Start the mesh to connect."
+        if (!permittedCandidate(targetNode.nodeId)) return "This link is disabled by the physical BLE test configuration."
+        if (manual) connectionPolicy.requestConnection(address, advertisedToken)
+        val existing = peerSessions[address]
+        if (existing != null) {
+            if (existing.state == BleConnectionState.READY) return "Already connected."
+            if (!manual || existing.outgoing || existing.isSubscribed || existing.worker != null) {
+                if (manual) emitEvent(TransportEvent.ConnectionInitiated(address, targetNode.nodeName))
+                return "Connecting to ${targetNode.nodeName}…"
+            }
+            // A server-side ACL callback alone does not establish a usable GATT session.
+            peerSessions.remove(address, existing)
+            existing.close()
         }
+        if (peerSessions.size >= maxConnections) return "All direct connection slots are in use."
+        if (!connectionPolicy.mayConnect(address, peerSessions.size)) return "Waiting to retry the Bluetooth connection."
+        connectionPolicy.attempted(address)
+        val device = recentDevices[address] ?: bluetoothAdapter?.getRemoteDevice(address)
+            ?: return "Bluetooth device unavailable."
+        val session = BlePeerSession(device, address, nodeId = targetNode.nodeId, displayName = targetNode.nodeName,
+            outgoing = true, expectedPeerId = targetNode.nodeId.takeIf { targetNode.status == NodeStatus.DISCONNECTED })
+        peerSessions[address] = session
 
         session.state = BleConnectionState.CONNECTING
         emitEvent(TransportEvent.ConnectionInitiated(address, targetNode.nodeName))
@@ -660,20 +692,20 @@ class AndroidBleGattTransport(
             nodeId = targetNode.nodeId
         )
 
-        val gatt = try {
-            session.device.connectGatt(context, false, gattClientCallback, BluetoothDevice.TRANSPORT_LE)
+        try {
+            session.gatt = requireNotNull(session.device.connectGatt(context, false, gattClientCallback, BluetoothDevice.TRANSPORT_LE))
         } catch (e: Exception) {
-            peerSessions.remove(address)
-            emitEvent(TransportEvent.ErrorOccurred("Connection failed: ${e.message}"))
-            return
+            disconnectNode(address)
+            emitEvent(TransportEvent.ErrorOccurred("Bluetooth connection could not start"))
+            return "Bluetooth connection could not start. Try Connect again."
         }
-        session.gatt = gatt
+        return "Connecting to ${targetNode.nodeName}…"
     }
 
     @SuppressLint("MissingPermission")
-    override fun disconnectNode(nodeId: String) {
+    @Synchronized override fun disconnectNode(nodeId: String) {
         val address = nodeToEndpointMap[nodeId] ?: peerSessions.values.find { it.nodeId == nodeId }?.address ?: nodeId
-        val session = peerSessions.remove(address)
+        val session = peerSessions.remove(address)?.also { it.close() }
         if (session != null) {
             session.state = BleConnectionState.DISCONNECTING
             try {
@@ -685,7 +717,7 @@ class AndroidBleGattTransport(
                 Log.w(TAG, "Error disconnecting GATT client: ${e.message}")
             }
         }
-        endpointToNodeMap.remove(address)
+        if (endpointToNodeMap.remove(address) != null && _isRunning.value) connectionPolicy.discovered(address)
         nodeToEndpointMap.entries.removeAll { it.value == address }
 
         emitLog(
@@ -695,6 +727,34 @@ class AndroidBleGattTransport(
             nodeId = nodeId
         )
         emitEvent(TransportEvent.NodeDisconnected(session?.nodeId ?: nodeId, address))
+    }
+
+    /** Android can keep an ACL link alive across client close/reopen without another server connection callback.
+     * MeshLink clients enable indications once per GATT session, before sending their fresh TLS ClientHello. */
+    @SuppressLint("MissingPermission")
+    @Synchronized private fun beginSubscription(device: BluetoothDevice): BlePeerSession? {
+        val address = device.address
+        if (!_isRunning.value || connectionPolicy.paused(address)) return null
+        val old = peerSessions[address]
+        if (old == null && peerSessions.size >= maxConnections) return null
+        if (old?.outgoing == true && old.state != BleConnectionState.READY) {
+            val peer = old.nodeId ?: return null
+            val peerToken = if (peer.startsWith("discovered-")) peer.removePrefix("discovered-") else hex(token(peer))
+            // Both phones dialed. Keep exactly the connection selected by discovery's role ordering.
+            if (hex(token(localNode?.nodeId ?: return null)) < peerToken) return null
+        }
+        val session = BlePeerSession(device, address, isSubscribed = true,
+            negotiatedMtu = old?.negotiatedMtu ?: 23, state = BleConnectionState.CHARACTERISTICS_READY)
+        peerSessions[address] = session
+        if (old != null) {
+            old.close()
+            old.gatt?.close()
+            endpointToNodeMap.remove(address)?.let { previous ->
+                nodeToEndpointMap.remove(previous.nodeId, address)
+                emitEvent(TransportEvent.NodeDisconnected(previous.nodeId, address))
+            }
+        }
+        return session
     }
 
     private val gattClientCallback = object : BluetoothGattCallback() {
@@ -708,11 +768,10 @@ class AndroidBleGattTransport(
             else disconnectNode(session.nodeId ?: session.address)
         }
         @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int): Unit = synchronized(this@AndroidBleGattTransport) {
             val address = gatt.device.address
             val session = peerSessions[address] ?: run { gatt.close(); return }
-            if (session.gatt != null && session.gatt !== gatt) { gatt.close(); return }
-            session.gatt = gatt
+            if (session.gatt !== gatt) { gatt.close(); return }
 
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 session.state = BleConnectionState.GATT_CONNECTED
@@ -726,10 +785,10 @@ class AndroidBleGattTransport(
                 session.completion?.complete(BluetoothGatt.GATT_FAILURE)
                 session.gatt?.close()
                 session.state = BleConnectionState.DISCONNECTED
-                peerSessions.remove(address)
+                peerSessions.remove(address)?.close()
                 val node = endpointToNodeMap.remove(address)
                 val nodeId = node?.nodeId ?: session.nodeId ?: address
-                nodeToEndpointMap.remove(nodeId)
+                nodeToEndpointMap.remove(nodeId, address)
 
                 emitLog(
                     tag = "BLE-DISCONNECT",
@@ -737,14 +796,16 @@ class AndroidBleGattTransport(
                     level = LogLevel.WARNING,
                     nodeId = nodeId
                 )
+                if (node != null && _isRunning.value) connectionPolicy.discovered(address)
                 emitEvent(TransportEvent.NodeDisconnected(nodeId, address))
             }
+            Unit
         }
 
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            val session = peerSessions[gatt.device.address]
-            if (session != null) {
+            val session = peerSessions[gatt.device.address]?.takeIf { it.gatt === gatt } ?: return
+            if (status == BluetoothGatt.GATT_SUCCESS) {
                 if (mtu >= 23) session.negotiatedMtu = mtu
                 emitLog(
                     tag = "BLE-MTU",
@@ -752,7 +813,7 @@ class AndroidBleGattTransport(
                     level = LogLevel.INFO
                 )
             }
-            session?.state = BleConnectionState.SERVICE_DISCOVERY
+            session.state = BleConnectionState.SERVICE_DISCOVERY
             emitLog(tag = "BLE-STATE", message = "Discovering GATT services on [${gatt.device.address}]...", level = LogLevel.INFO)
             gatt.discoverServices()
         }
@@ -763,14 +824,14 @@ class AndroidBleGattTransport(
             val session = peerSessions[address]?.takeIf { it.gatt === gatt } ?: return
 
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                session.state = BleConnectionState.ERROR
+                disconnectNode(address)
                 emitLog(tag = "BLE-ERROR", message = "Service discovery failed on peer [$address]", level = LogLevel.ERROR)
                 return
             }
 
             val service = gatt.getService(SERVICE_UUID)
             if (service == null) {
-                session.state = BleConnectionState.ERROR
+                disconnectNode(address)
                 emitLog(tag = "BLE-ERROR", message = "MeshLink service [$SERVICE_UUID] not found on peer [$address]", level = LogLevel.WARNING)
                 return
             }
@@ -789,14 +850,15 @@ class AndroidBleGattTransport(
                 if (!gatt.setCharacteristicNotification(rxChar, true)) { disconnectNode(session.address); return }
                 val descriptor = rxChar.getDescriptor(CCCD_UUID)
                 if (descriptor != null) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
+                    val accepted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_INDICATION_VALUE) == BluetoothStatusCodes.SUCCESS
                     } else {
                         @Suppress("DEPRECATION")
                         descriptor.value = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
                         @Suppress("DEPRECATION")
                         gatt.writeDescriptor(descriptor)
                     }
+                    if (!accepted) { disconnectNode(address); return }
                     emitLog(tag = "BLE-NOTIFY", message = "Subscribed to RX notifications on peer [$address]. State: NOTIFICATIONS_ENABLING", level = LogLevel.SUCCESS)
                 }
             }
@@ -822,81 +884,98 @@ class AndroidBleGattTransport(
     // =========================================================================
     // APPLICATION-LEVEL HELLO HANDSHAKE
     // =========================================================================
-    private fun sendHandshakeToPeer(session: BlePeerSession) {
+    @Synchronized private fun sendHandshakeToPeer(session: BlePeerSession) {
+        if (session.worker != null || peerSessions[session.address] !== session) return
         val node = localNode ?: return
-        val handshake = BleHandshake(
-            type = "HANDSHAKE",
-            protocolVersion = 1,
-            nodeId = node.nodeId,
-            displayName = node.nodeName,
-            isRelayCapable = true
-        )
-        val jsonStr = BleHandshake.toJson(handshake)
-        val payloadBytes = jsonStr.toByteArray(StandardCharsets.UTF_8)
-        val framedBytes = MeshLinkFrame.encode(MeshLinkFrame.FRAME_TYPE_HELLO_HANDSHAKE, payloadBytes)
-
-        if (session.state != BleConnectionState.READY) session.state = BleConnectionState.HANDSHAKE_SENT
-        emitLog(
-            tag = "BLE-HANDSHAKE",
-            message = "Transmitting HELLO handshake to [${session.address}] (${handshake.displayName} [${handshake.nodeId}]). State: HANDSHAKE_SENT",
-            level = LogLevel.INFO
-        )
-
-        transportScope.launch {
-            if (sendFramedBytesToSession(session, framedBytes)) {
-                session.helloSent = true
-                markReady(session)
+        session.state = BleConnectionState.HANDSHAKE_SENT
+        session.worker = transportScope.launch {
+            try {
+                val engine = identity.engine(session.gatt != null, discoverParticipants = true)
+                var peer: PeerCard? = null
+                var helloPending = false
+                val pipe = TlsPipe(engine, wire = { bytes ->
+                    var offset = 0
+                    while (offset < bytes.size) {
+                        // Keep each reassembly within a few dozen ATT operations even at the minimum MTU.
+                        val segmentSize = minOf(MeshLinkFrame.MAX_PAYLOAD_SIZE, (session.usableChunkSize - BleFragments.HEADER) * 24 - 6)
+                        val end = minOf(bytes.size, offset + segmentSize)
+                        val frame = MeshLinkFrame.encode(MeshLinkFrame.FRAME_TYPE_TLS, bytes.copyOfRange(offset, end))
+                        check(sendFramedBytesToSession(session, frame))
+                        offset = end
+                    }
+                }, authenticated = {
+                    helloPending = true
+                }, received = { bytes ->
+                    if (session.state != BleConnectionState.READY) {
+                        val hello = requireNotNull(BleHandshake.fromJson(bytes.toString(Charsets.UTF_8)))
+                        val cert = engine.session.peerCertificates.first() as java.security.cert.X509Certificate
+                        require(!connectionPolicy.paused(session.address, hex(token(hello.nodeId))))
+                        require(demoTopology.permits(hello.nodeId))
+                        val pin = identity.authenticateHello(hello, cert, identity.profile(localNode ?: node).profile.card, session.expectedPeerId)
+                        peer = pin
+                        synchronized(this@AndroidBleGattTransport) {
+                            require(peerSessions[session.address] === session)
+                            nodeToEndpointMap[pin.id]?.takeIf { it != session.address }?.let { stale ->
+                                // The same pinned identity completed a new handshake on a rotated address.
+                                disconnectNode(stale)
+                            }
+                            session.nodeId = pin.id
+                            session.displayName = pin.name
+                            val neighbor = Node(pin.id, session.displayName!!, status = NodeStatus.CONNECTED, endpointId = session.address)
+                            endpointToNodeMap[session.address] = neighbor
+                            nodeToEndpointMap[pin.id] = session.address
+                            session.state = BleConnectionState.READY
+                            rejectedEndpoints.value = rejectedEndpoints.value - session.address
+                            connectionPolicy.ready(session.address)
+                            emitEvent(TransportEvent.NodeConnected(neighbor))
+                        }
+                    } else {
+                        val pin = requireNotNull(peer)
+                        require(identity.linkCard(pin.id)?.sameKeys(pin) == true && demoTopology.permits(pin.id))
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (now - session.rateStart >= 1000) { session.rateStart = now; session.receivedCount = 0 }
+                        require(++session.receivedCount <= 64) { "Peer packet rate exceeded" }
+                        val packet = requireNotNull(JsonSerializer.bytesToPacket(bytes))
+                        require(packet.sourceId.length in 1..80 && packet.messageId.length in 1..200 &&
+                            packet.destinationId.length <= 80 && packet.routeHistory.size <= 32 && packet.returnPath.size <= 32)
+                        if (packet.control != null) require(packet.sourceId == pin.id && packet.control.unreachable.size <= 64)
+                        emitLog("CRC-PASS", "CRC and TLS verified from " + pin.id)
+                        emitEvent(TransportEvent.PacketReceived(packet, session.address))
+                    }
+                })
+                pipe.begin()
+                for (event in session.tlsEvents) {
+                    require(!BleConnectionPolicy.sessionExpired(android.os.SystemClock.elapsedRealtime() - session.created,
+                        session.state == BleConnectionState.READY)) { "Session expired" }
+                    when (event) {
+                        is TlsEvent.Incoming -> pipe.receive(event.bytes)
+                        is TlsEvent.Outgoing -> {
+                            require(peer?.let { identity.linkCard(it.id)?.sameKeys(it) == true } == true)
+                            pipe.send(JsonSerializer.packetToBytes(event.packet))
+                            emitEvent(TransportEvent.PacketSent(event.packet, session.address))
+                        }
+                    }
+                    if (helloPending) {
+                        helloPending = false
+                        val current = localNode ?: node
+                        pipe.send(BleHandshake.toJson(BleHandshake(protocolVersion = 2,
+                            nodeId = current.nodeId, displayName = current.nodeName, profile = identity.profile(current).export())).toByteArray())
+                    }
+                }
+            } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+            catch (e: Exception) {
+                reject(session.address)
+                emitLog("SECURITY", "Secure session rejected: " + e.javaClass.simpleName, LogLevel.WARNING)
+                if (peerSessions[session.address] === session) disconnectNode(session.address)
             }
         }
     }
 
-    @Synchronized private fun markReady(session: BlePeerSession) {
-        val hello = session.handshake ?: return
-        if (!demoTopology.permits(hello.nodeId)) { disconnectNode(session.address); return }
-        if (!session.helloSent || session.state == BleConnectionState.READY || peerSessions[session.address] !== session) return
-        session.state = BleConnectionState.READY
-        val node = Node(hello.nodeId, hello.displayName, status = NodeStatus.CONNECTED, endpointId = session.address)
-        endpointToNodeMap[session.address] = node
-        nodeToEndpointMap[hello.nodeId] = session.address
-        emitEvent(TransportEvent.NodeConnected(node))
-    }
-
-    // =========================================================================
-    // TRANSMISSION & CRC FRAMING PIPELINE
-    // =========================================================================
     override fun sendPacket(packet: MessagePacket, targetEndpointId: String): Boolean {
-        val resolvedEndpoint = nodeToEndpointMap[targetEndpointId] ?: targetEndpointId
-        val session = peerSessions[resolvedEndpoint]
-
-        if (session == null || session.state != BleConnectionState.READY || !demoTopology.permits(session.nodeId ?: "") || queued.get() >= 64) return false
-        val jsonStr = JsonSerializer.packetToJson(packet)
-        val payloadBytes = jsonStr.toByteArray(StandardCharsets.UTF_8)
-
-        // Check if intentional CRC corruption is triggered for Review III demo
-        corruptMessages.entries.removeAll { it.value < System.currentTimeMillis() }
-        if (packet.control == null && packet.ackFor == null && corruptNextCrc.getAndSet(false)) {
-            if (corruptMessages.size >= 64) corruptMessages.remove(corruptMessages.keys.first())
-            corruptMessages[packet.messageId] = System.currentTimeMillis() + 120_000
-        }
-        val shouldCorrupt = corruptMessages.containsKey(packet.messageId)
-
-        val framedBytes = try { MeshLinkFrame.encode(
-            frameType = MeshLinkFrame.FRAME_TYPE_ROUTED_PACKET,
-            payload = payloadBytes,
-            corruptForTesting = shouldCorrupt
-        ) } catch (e: IllegalArgumentException) { emitEvent(TransportEvent.ErrorOccurred("Frame too large: ${e.message}")); return false }
-
-        val computedCrc = Crc16Ccitt.compute(framedBytes, 0, framedBytes.size - MeshLinkFrame.CRC_SIZE)
-
-        queued.incrementAndGet()
-        transportScope.launch {
-            try {
-                emitLog("BLE-TX", "Sending ${framedBytes.size}B to ${session.address}; CRC ${Crc16Ccitt.formatHex(computedCrc)}; corrupted=$shouldCorrupt")
-                if (sendFramedBytesToSession(session, framedBytes)) emitEvent(TransportEvent.PacketSent(packet, resolvedEndpoint))
-            } finally { queued.decrementAndGet() }
-        }
-
-        return true
+        val endpoint = nodeToEndpointMap[targetEndpointId] ?: targetEndpointId
+        val session = peerSessions[endpoint] ?: return false
+        if (session.state != BleConnectionState.READY || !demoTopology.permits(session.nodeId.orEmpty())) return false
+        return session.tlsEvents.trySend(TlsEvent.Outgoing(packet)).isSuccess
     }
 
     override fun broadcastPacket(packet: MessagePacket, excludeEndpointIds: Set<String>): Int {
@@ -957,95 +1036,16 @@ class AndroidBleGattTransport(
         } catch (e: IllegalStateException) {
             emitLog("FRAGMENT", "Rejected transfer: ${e.message}", LogLevel.WARNING); return
         } ?: return
-        val frameResults = listOf(MeshLinkFrame.decode(bytes))
-
-        for (result in frameResults) {
-            when (result) {
-                is MeshLinkFrame.FrameResult.Success -> {
-                    val frameType = result.frameType
-                    val payloadBytes = result.payload
-                    val crcHex = Crc16Ccitt.formatHex(result.crc)
-
-                    when (frameType) {
-                        MeshLinkFrame.FRAME_TYPE_HELLO_HANDSHAKE -> {
-                            val jsonStr = String(payloadBytes, StandardCharsets.UTF_8)
-                            val handshake = BleHandshake.fromJson(jsonStr)
-                            if (handshake != null && handshake.protocolVersion == 1 && handshake.nodeId != localNode?.nodeId && handshake.nodeId.length in 1..80 && handshake.displayName.length <= 64) {
-                                if (!demoTopology.permits(handshake.nodeId)) {
-                                    emitLog("DEMO", "Incoming forbidden peer rejected: ${handshake.nodeId}", LogLevel.WARNING)
-                                    disconnectNode(session.address); return
-                                }
-                                val existing = nodeToEndpointMap[handshake.nodeId]
-                                if (existing != null && existing != session.address) { disconnectNode(session.address); return }
-                                connectionPolicy.ready(session.address)
-                                session.nodeId = handshake.nodeId
-                                session.displayName = handshake.displayName
-                                session.handshake = handshake
-
-                                emitLog(
-                                    tag = "CRC-PASS",
-                                    message = "INFO [CRC][PASS] HELLO Frame Valid (CRC: $crcHex, Peer: ${handshake.displayName} [${handshake.nodeId}]). Handshake validated",
-                                    level = LogLevel.SUCCESS,
-                                    nodeId = handshake.nodeId
-                                )
-
-                                markReady(session)
-                            } else {
-                                emitLog(tag = "BLE-HANDSHAKE", message = "Invalid HELLO payload from [${session.address}]", level = LogLevel.WARNING)
-                            }
-                        }
-
-                        MeshLinkFrame.FRAME_TYPE_ROUTED_PACKET -> {
-                            val jsonStr = String(payloadBytes, StandardCharsets.UTF_8)
-                            val packet = JsonSerializer.jsonToPacket(jsonStr)
-
-                            if (packet != null && session.state == BleConnectionState.READY && demoTopology.permits(session.nodeId ?: "")) {
-                                emitLog(
-                                    tag = "CRC-PASS",
-                                    message = "INFO [CRC][PASS] messageId=${packet.messageId} received=$crcHex calculated=$crcHex length=${payloadBytes.size}B from [${session.address}]",
-                                    level = LogLevel.SUCCESS,
-                                    packetSummary = packet.getSummary(),
-                                    nodeId = packet.sourceId
-                                )
-                                // Pass ONLY CRC-valid packets to upper repository / routing engine
-                                emitEvent(TransportEvent.PacketReceived(packet, session.address))
-                            } else {
-                                emitLog(
-                                    tag = "BLE-RX",
-                                    message = "Failed to deserialize JSON packet after CRC pass from [${session.address}]",
-                                    level = LogLevel.ERROR
-                                )
-                            }
-                        }
-
-                        MeshLinkFrame.FRAME_TYPE_HEARTBEAT -> {
-                            emitLog(tag = "BLE-HEARTBEAT", message = "Heartbeat ping received from [${session.address}]", level = LogLevel.INFO)
-                        }
-                    }
-                }
-
-                is MeshLinkFrame.FrameResult.CrcError -> {
-                    val rxHex = Crc16Ccitt.formatHex(result.receivedCrc)
-                    val calcHex = Crc16Ccitt.formatHex(result.calculatedCrc)
-
-                    // REJECT FRAME: Discard completely and DO NOT forward to RoutingEngine
-                    emitLog(
-                        tag = "CRC-FAIL",
-                        message = "WARN [CRC][FAIL] Frame Corrupted! received=$rxHex calculated=$calcHex length=${result.payloadLength}B peer=${session.displayName ?: session.address} [${session.address}]. Packet DROPPED before routing.",
-                        level = LogLevel.ERROR,
-                        nodeId = session.nodeId
-                    )
-                }
-
-                is MeshLinkFrame.FrameResult.CorruptedHeader -> {
-                    emitLog(
-                        tag = "FRAME-ERROR",
-                        message = "WARN [FRAME][HEADER_ERROR] ${result.reason} on peer [${session.address}]",
-                        level = LogLevel.WARNING
-                    )
-                }
-            }
+        val result = MeshLinkFrame.decode(bytes)
+        if (result !is MeshLinkFrame.FrameResult.Success || result.frameType != MeshLinkFrame.FRAME_TYPE_TLS) {
+            if (result !is MeshLinkFrame.FrameResult.CrcError) reject(session.address)
+            emitLog("BLE-REJECT", if (result is MeshLinkFrame.FrameResult.CrcError) "CRC FAIL: discarded before TLS and routing"
+                else "Incompatible frame: MeshLink secure protocol 2 required", LogLevel.WARNING)
+            disconnectNode(session.address)
+            return
         }
+        sendHandshakeToPeer(session)
+        if (!session.tlsEvents.trySend(TlsEvent.Incoming(result.payload)).isSuccess) disconnectNode(session.address)
     }
 
     // =========================================================================

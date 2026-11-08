@@ -47,7 +47,16 @@ class AndroidMessageNotifier(private val context: Context) {
         Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE -> "MeshLink Messages channel blocked"
         else -> "System notifications allowed"
     }
-    fun cancelAll() = manager.cancelAll()
+    fun cancelAll() { manager.activeNotifications.filter { it.tag?.startsWith("meshlink://received/") == true }.forEach { manager.cancel(it.tag,it.id) } }
+    fun cancelMessages(targets: Set<NotificationTarget>) {
+        val tags = targets.map { Uri.Builder().scheme("meshlink").authority("received")
+            .appendPath(it.senderId).appendPath(it.messageId).build().toString() }.toSet()
+        manager.activeNotifications.filter { it.tag in tags }.forEach { manager.cancel(it.tag, it.id) }
+    }
+    fun cancelFrom(sender: String) {
+        val prefix = Uri.Builder().scheme("meshlink").authority("received").appendPath(sender).build().toString() + "/"
+        manager.activeNotifications.filter { it.tag?.startsWith(prefix) == true }.forEach { manager.cancel(it.tag, it.id) }
+    }
     fun post(message: MessageNotification) {
         if (!permitted()) return
         val uri = Uri.Builder().scheme("meshlink").authority("received").appendPath(message.target.senderId).appendPath(message.target.messageId).build()

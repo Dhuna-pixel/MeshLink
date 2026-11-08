@@ -86,10 +86,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 31) {
             add(Manifest.permission.BLUETOOTH_CONNECT); add(Manifest.permission.BLUETOOTH_SCAN); add(Manifest.permission.BLUETOOTH_ADVERTISE)
         } else { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
-        if (viewModel.uiState.value.transportMode == TransportMode.NEARBY_CONNECTIONS) {
-            add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION)
-            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.NEARBY_WIFI_DEVICES)
-        }
+
     }.distinct().toTypedArray()
     private fun readiness(): BluetoothReadiness {
         val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
@@ -124,9 +121,13 @@ class MainActivity : ComponentActivity() {
         val ready = readiness()
         if (!ready.permitted || !ready.enabled) viewModel.startup.cancel("Bluetooth or permissions changed. Tap Start to try again.")
         else {
-            viewModel.startApprovedNetworking()
-            viewModel.startup.finished()
-            if (viewModel.uiState.value.transportMode == TransportMode.BLE_GATT) requestMessageNotifications()
+            try {
+                viewModel.startApprovedNetworking()
+                viewModel.startup.finished()
+                requestMessageNotifications()
+            } catch (e: RuntimeException) {
+                viewModel.startup.cancel("Android could not start mesh networking. Check Bluetooth permissions and tap Start again.")
+            }
         }
         viewModel.syncStartup()
     }

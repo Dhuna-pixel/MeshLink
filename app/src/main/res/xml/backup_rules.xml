@@ -2,5 +2,8 @@
 <full-backup-content>
     <exclude domain="root" path="." />
     <exclude domain="sharedpref" path="mesh_identity.xml" />
-        <exclude domain="sharedpref" path="mesh_received.xml" />
+    <exclude domain="sharedpref" path="mesh_received.xml" />
+    <exclude domain="sharedpref" path="MeshLink.v2.pins.xml" />
+    <exclude domain="sharedpref" path="mesh_inbox_v2.xml" />
+    <exclude domain="database" path="." />
 </full-backup-content>

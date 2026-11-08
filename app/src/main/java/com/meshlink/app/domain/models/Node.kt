@@ -29,5 +29,6 @@ data class Node(
     val status: NodeStatus = NodeStatus.CONNECTED,
     val endpointId: String? = null,
     val lastSeenTimestamp: Long = System.currentTimeMillis(),
-    val isRelayCapable: Boolean = true
+    val isRelayCapable: Boolean = true,
+    val about: String = ""
 )

@@ -32,18 +32,19 @@ import com.meshlink.app.ui.theme.TextSecondary
 fun NodeIdentityDialog(
     initialNodeId: String,
     initialNodeName: String,
-    onConfirm: (nodeId: String, nodeName: String) -> Unit,
+    initialAbout: String,
+    onConfirm: (nodeId: String, nodeName: String, about: String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var nodeId by remember { mutableStateOf(initialNodeId) }
-    var nodeName by remember { mutableStateOf(initialNodeName) }
+    var about by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(initialAbout) }
+    var nodeName by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(initialNodeName) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MeshSurface,
         title = {
             Text(
-                text = "Configure Node Identity",
+                text = "My profile",
                 style = MaterialTheme.typography.titleLarge,
                 color = MeshCyanPrimary
             )
@@ -51,32 +52,16 @@ fun NodeIdentityDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "Choose a friendly name. Keep the unique ID stable; BLE demo configurations must use this exact ID.",
+                    text = "Your name and status are visible to people participating in the mesh.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
                 Spacer(modifier = Modifier.height(16.dp))
 
                 OutlinedTextField(
-                    value = nodeId,
-                    onValueChange = { nodeId = it.take(80) },
-                    label = { Text("Node ID") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MeshCyanPrimary,
-                        unfocusedBorderColor = TextSecondary,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
                     value = nodeName,
-                    onValueChange = { nodeName = it },
-                    label = { Text("Node Display Name") },
+                    onValueChange = { nodeName = it.take(64) },
+                    label = { Text("Display name") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = MeshCyanPrimary,
@@ -88,13 +73,16 @@ fun NodeIdentityDialog(
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(about, { about = it.take(160) }, label = { Text("Status (optional)") },
+                    modifier = Modifier.fillMaxWidth(), maxLines = 3)
 
 
             }
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(nodeId, nodeName) },
+                enabled = nodeName.isNotBlank(),
+                onClick = { onConfirm(initialNodeId, nodeName, about) },
                 colors = ButtonDefaults.buttonColors(containerColor = MeshCyanPrimary, contentColor = MaterialTheme.colorScheme.onPrimary),
                 shape = RoundedCornerShape(8.dp)
             ) {

@@ -12,16 +12,15 @@ import kotlinx.coroutines.delay
 
 /** Passive status only: the Start transaction owns permission prompts and continuation. */
 @Composable
-fun PermissionHandler(legacyNearby: Boolean = false) {
+fun PermissionHandler() {
     val context = LocalContext.current
     var granted by remember { mutableStateOf(false) }
-    LaunchedEffect(legacyNearby) {
+    LaunchedEffect(Unit) {
         val permissions = buildList {
             if (Build.VERSION.SDK_INT >= 31) {
                 add(Manifest.permission.BLUETOOTH_CONNECT); add(Manifest.permission.BLUETOOTH_SCAN); add(Manifest.permission.BLUETOOTH_ADVERTISE)
             }
-            if (Build.VERSION.SDK_INT < 31 || legacyNearby) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
-            if (legacyNearby && Build.VERSION.SDK_INT >= 33) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            if (Build.VERSION.SDK_INT < 31) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
         }
         while (true) {
             granted = permissions.all { ContextCompat.checkSelfPermission(context,it) == PackageManager.PERMISSION_GRANTED }

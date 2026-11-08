@@ -91,7 +91,7 @@ fun PacketInspectorDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "Raw Wire JSON:",
+                    text = "Local message record",
                     style = MaterialTheme.typography.titleMedium,
                     color = TextPrimary
                 )

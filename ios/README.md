@@ -2,7 +2,7 @@
 
 **MeshLink** is a decentralized, infrastructure-independent peer-to-peer ad-hoc mesh networking application for iOS. It enables devices to discover nearby peers, establish wireless links, and exchange multi-hop messages with Time-To-Live (TTL) hop limits, route history tracking, and loop prevention—without cellular towers, Wi-Fi routers, or internet access.
 
-This iOS application is **100% wire- and logic-compatible** with the reference Android MeshLink project.
+**Current compatibility status:** this directory describes an earlier implementation. It is not compatible with the current Android secure transport, service UUIDs or group/chat protocol. Android–iOS messaging is not currently supported or verified. See the [root README](../README.md) for the current Android feature set. The feature descriptions below are historical iOS documentation.
 
 ---
 

@@ -17,8 +17,8 @@ fun DemoTopologyPanel(localId: String, topology: DemoTopology, message: String, 
     val clipboard = LocalClipboardManager.current
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("BLE Demo Topology Mode",style = MaterialTheme.typography.titleMedium)
-            Text(if (topology.enabled) "Controlled BLE Demo Mode — real BLE GATT, restricted direct links" else "Normal BLE Mode — automatic unrestricted neighbors",style = MaterialTheme.typography.bodySmall)
+            Text("Testing only · direct BLE links",style = MaterialTheme.typography.titleMedium)
+            Text(if (topology.enabled) "Controlled BLE Demo Mode — real BLE GATT, restricted direct links" else "Normal physical BLE mesh · automatic links to participating devices",style = MaterialTheme.typography.bodySmall)
             Row {
                 Switch(checked = topology.enabled,onCheckedChange = { onApply(it,"",false) },enabled = !busy)
                 Text(if (topology.enabled) "Demo restrictions ON" else "Demo restrictions OFF")

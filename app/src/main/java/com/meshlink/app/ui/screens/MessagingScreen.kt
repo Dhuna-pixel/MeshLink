@@ -1,431 +1,143 @@
 package com.meshlink.app.ui.screens
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import com.meshlink.app.ui.components.ParticipantName
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.CallReceived
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.meshlink.app.domain.models.MessagePacket
-import com.meshlink.app.presentation.viewmodels.MeshUiState
-import com.meshlink.app.ui.theme.CodeLogBackground
-import com.meshlink.app.ui.theme.MeshAmberWarning
-import com.meshlink.app.ui.theme.MeshCyanPrimary
-import com.meshlink.app.ui.theme.MeshBackground
-import com.meshlink.app.ui.theme.MeshSurface
-import com.meshlink.app.ui.theme.MeshSurfaceVariant
-import com.meshlink.app.ui.theme.MeshGreenAccent
-import com.meshlink.app.ui.theme.MeshPurpleAccent
-import com.meshlink.app.ui.theme.TextPrimary
-import com.meshlink.app.ui.theme.TextSecondary
+import com.meshlink.app.presentation.viewmodels.*
+import com.meshlink.app.ui.components.DestinationPicker
+import java.text.DateFormat
+import androidx.lifecycle.repeatOnLifecycle
+import java.util.Date
+
+internal fun conversations(owner: String, packets: List<MessagePacket>) = packets.asSequence()
+    .filter { it.group == null && (it.sourceId == owner || it.destinationId == owner) }
+    .sortedWith(compareBy<MessagePacket> { it.timestamp }.thenBy { it.messageId })
+    .groupBy { if (it.sourceId == owner) it.destinationId else it.sourceId }
+
+internal fun MessagePacket.peerName(owner: String) =
+    if (owner == sourceId) destinationName.ifBlank { destinationId } else sourceName.ifBlank { sourceId }
+
+internal fun deliveryLabel(status: String?) = when {
+    status == null -> "Status unavailable"
+    status.startsWith("Delivered") -> "Delivered"
+    status.startsWith("Failed") -> "Failed"
+    status.startsWith("Next-hop") -> "Sent to next hop"
+    status == "Discovering route" -> status
+    status == "Queued" -> status
+    else -> "Sending"
+}
+
+internal fun stamp(time: Long): String = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(time))
 
 @Composable
-fun MessagingScreen(
-    uiState: MeshUiState,
-    onDestinationSelected: (String) -> Unit,
-    onMessageInputChanged: (String) -> Unit,
-    onTtlChanged: (Int) -> Unit,
-    onToggleCrcCorruption: () -> Unit,
-    onSendMessage: () -> Unit,
-    onInspectPacket: (MessagePacket) -> Unit,
-    onClearMessages: () -> Unit
-) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MeshBackground)
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // =========================================================================
-        // MESSAGE COMPOSER CARD
-        // =========================================================================
-        item {
-            if (uiState.notificationTapMessage.isNotBlank()) Text(uiState.notificationTapMessage, color = TextSecondary)
-            Spacer(modifier = Modifier.height(4.dp))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MeshSurface),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Transmit Mesh Packet",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MeshCyanPrimary
-                        )
-
-                        // CRC-16 badge
-                        Box(
-                            modifier = Modifier
-                                .background(MeshGreenAccent.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = "CRC-16-CCITT",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = MeshGreenAccent
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    com.meshlink.app.ui.components.DestinationPicker(
-                        selectedIds = uiState.selectedDestinationNodeIds,
-                        options = uiState.destinations, onSelect = onDestinationSelected
-                    )
-                    Text(
-                        if (uiState.destinations.isEmpty()) "No other nodes known. Start networking and wait for peer discovery."
-                        else if (uiState.isNetworkingActive) "Discovery active · remote announcements refresh about every 30 seconds"
-                        else "Networking stopped · remembered nodes may be unreachable",
-                        style = MaterialTheme.typography.bodySmall, color = TextSecondary
-                    )
-                    if (uiState.selectedDestinationNodeIds.size > 1) {
-                        Text("Each recipient gets a separate message and delivery status.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        if (uiState.isCrcErrorSimulationArmed) Text("CRC test affects only the next outgoing frame, not every recipient.", style = MaterialTheme.typography.bodySmall, color = MeshAmberWarning)
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // TTL Slider
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Time-To-Live (Hop Limit):",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary
-                        )
-                        Text(
-                            text = "${uiState.ttlSliderValue} Hops",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MeshCyanPrimary,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-
-                    Slider(
-                        value = uiState.ttlSliderValue.toFloat(),
-                        onValueChange = { onTtlChanged(it.toInt()) },
-                        valueRange = 1f..10f,
-                        steps = 8,
-                        colors = SliderDefaults.colors(
-                            thumbColor = MeshCyanPrimary,
-                            activeTrackColor = MeshCyanPrimary,
-                            inactiveTrackColor = MeshSurfaceVariant
-                        )
-                    )
-
-                    // Message Text Field
-                    OutlinedTextField(
-                        value = uiState.messageInputText,
-                        onValueChange = onMessageInputChanged,
-                        label = { Text("Payload / Message Content") },
-                        placeholder = { Text("Enter a message for the selected recipients") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MeshCyanPrimary,
-                            unfocusedBorderColor = TextSecondary,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                        maxLines = 3
-                    )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // CRC Error Simulation Control for Review III Demo
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                if (uiState.isCrcErrorSimulationArmed) MeshAmberWarning.copy(alpha = 0.15f) else MeshSurfaceVariant,
-                                RoundedCornerShape(8.dp)
-                            )
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.BugReport,
-                                contentDescription = null,
-                                tint = if (uiState.isCrcErrorSimulationArmed) MeshAmberWarning else TextSecondary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Column {
-                                Text(
-                                    text = "Simulate CRC Corruption",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (uiState.isCrcErrorSimulationArmed) MeshAmberWarning else TextPrimary
-                                )
-                                Text(
-                                    text = if (uiState.isCrcErrorSimulationArmed) "ARMED: Next TX will flip a payload byte" else "Demonstrates error rejection at receiver",
-                                    fontSize = 10.sp,
-                                    color = TextSecondary
-                                )
-                            }
-                        }
-
-                        Switch(
-                            checked = uiState.isCrcErrorSimulationArmed,
-                            onCheckedChange = { onToggleCrcCorruption() },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = MeshAmberWarning,
-                                checkedTrackColor = MeshAmberWarning.copy(alpha = 0.4f)
-                            )
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Button(
-                        onClick = onSendMessage,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = uiState.isNetworkingActive && uiState.messageInputText.isNotBlank() && uiState.destinations.any { it.id in uiState.selectedDestinationNodeIds },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (uiState.isCrcErrorSimulationArmed) MeshAmberWarning else MeshGreenAccent,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Icon(imageVector = Icons.Default.Send, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (uiState.isCrcErrorSimulationArmed) "Send Corrupted Frame (Test)" else "Send to ${uiState.selectedDestinationNodeIds.size} ${if (uiState.selectedDestinationNodeIds.size == 1) "recipient" else "recipients"}",
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
+fun ChatsScreen(state: MeshUiState, history: Map<String,List<MessagePacket>>, open: (String) -> Unit, newChat: () -> Unit, newGroup: () -> Unit = {}, openGroup: (String) -> Unit = {}) {
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(newChat) { Text("New conversation") }
+            OutlinedButton(newGroup) { Text("New group") }
+        } }
+        items(state.groups.filterNot { it.id in state.hiddenGroups }.sortedByDescending { group -> state.messages.firstOrNull { it.group?.chat?.id == group.id }?.timestamp ?: 0 }, key = { "group-" + it.id }) { group ->
+            val messages = state.messages.filter { it.group?.chat?.id == group.id }
+            val latest = messages.maxByOrNull { it.timestamp }
+            val unread = messages.count { it.sourceId to it.messageId in state.unread }
+            ListItem(modifier = Modifier.clickable { openGroup(group.id) },
+                headlineContent = { Text(group.name) },
+                overlineContent = { Text(if (group.id in state.leftGroups) "Group · You left" else "Group · ${group.members.size} members") },
+                supportingContent = { Text(latest?.payload ?: "No messages yet", maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                trailingContent = { if (unread > 0) Text("$unread unread") })
+            HorizontalDivider()
+        }
+        if (state.notificationTapMessage.isNotEmpty()) item { Text(state.notificationTapMessage) }
+        if (history.isEmpty() && state.groups.none { it.id !in state.hiddenGroups }) item {
+            if (state.loadingHistory) LinearProgressIndicator() else Column(Modifier.padding(vertical = 32.dp)) {
+                Text("No conversations yet", style = MaterialTheme.typography.headlineSmall)
+                Text("Discover nearby devices to start chatting.")
             }
         }
-
-        // =========================================================================
-        // MESSAGE HISTORY HEADER
-        // =========================================================================
-        item {
-            Spacer(modifier = Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Message Packet History (${uiState.messages.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary
-                )
-                if (uiState.messages.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = onClearMessages,
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Clear", color = TextSecondary)
-                    }
-                }
-            }
-        }
-
-        // =========================================================================
-        // MESSAGE HISTORY ITEMS
-        // =========================================================================
-        item {
-            Text("Routes · ${uiState.connectedNodes.size} direct neighbors · ${uiState.knownNodes.size} known nodes", color = TextSecondary)
-            uiState.routes.forEach { route ->
-                Text("${route.destination.take(12)} via ${route.nextHop.take(12)} · ${route.hops} hops · ${if (route.valid) "valid" else "expired / invalid"}", color = TextSecondary, fontSize = 11.sp)
-            }
-        }
-        if (uiState.messages.isEmpty()) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "No messages sent or received yet.\nSend a message to see multi-hop routing & CRC in action.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
-                }
-            }
-        } else {
-            items(uiState.messages) { packet ->
-                MessageCard(
-                    packet = packet,
-                    currentNodeId = uiState.currentNode.nodeId,
-                    status = uiState.deliveryStatuses[packet.messageId],
-                    onInspect = { onInspectPacket(packet) }
-                )
-            }
-        }
-
-        item {
-            Spacer(modifier = Modifier.height(16.dp))
+        items(history.entries.sortedByDescending { it.value.last().timestamp }, key = { it.key }) { (peer, messages) ->
+            val latest = messages.last()
+            val outgoing = latest.sourceId == state.currentNode.nodeId
+            val unread = messages.count { it.sourceId to it.messageId in state.unread }
+            ListItem(modifier = Modifier.clickable { open(peer) },
+                headlineContent = { val contact = state.destinations.find { it.id == peer }
+                    ParticipantName(contact?.name ?: latest.peerName(state.currentNode.nodeId), contact?.verified == true) },
+                supportingContent = { Text(latest.payload, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                overlineContent = { Text(stamp(latest.timestamp)) },
+                trailingContent = { Column {
+                    if (unread > 0) Text("$unread unread")
+                    if (outgoing) Text(deliveryLabel(state.deliveryStatuses[latest.messageId]))
+                } })
+            HorizontalDivider()
         }
     }
 }
 
 @Composable
-private fun MessageCard(
-    packet: MessagePacket,
-    currentNodeId: String,
-    status: String?,
-    onInspect: () -> Unit
-) {
-    val isDeliveredHere = packet.destinationId.equals(currentNodeId, ignoreCase = true)
-    val isSentFromHere = packet.sourceId.equals(currentNodeId, ignoreCase = true)
-    val failed = isSentFromHere && status?.startsWith("Failed") == true
-    val confirmed = isSentFromHere && status?.startsWith("Delivered") == true
-    val timedOut = failed && status?.contains("acknowledgment timed out", ignoreCase = true) == true
-    val title = when {
-        isDeliveredHere -> "Received"
-        timedOut -> "Delivery unconfirmed"
-        failed -> "Message not delivered"
-        confirmed -> "Delivered"
-        isSentFromHere -> "Sending…"
-        else -> "Relayed"
-    }
-    val accent = when {
-        failed -> MaterialTheme.colorScheme.error
-        isDeliveredHere || confirmed -> MeshGreenAccent
-        else -> MaterialTheme.colorScheme.primary
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MeshSurface),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            // Reserve the action's touch target; text wraps only inside its own weighted column.
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = when {
-                        failed -> Icons.Default.ErrorOutline
-                        isDeliveredHere || confirmed -> Icons.Default.CheckCircle
-                        else -> Icons.Default.Send
-                    },
-                    contentDescription = null,
-                    tint = accent,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold, color = accent)
-                IconButton(onClick = onInspect, modifier = Modifier.size(48.dp)) {
-                    Icon(Icons.Default.Info, contentDescription = "Inspect packet details", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+fun ConversationScreen(state: MeshUiState, messages: List<MessagePacket>, edit: (String) -> Unit,
+    send: () -> Unit, retry: (MessagePacket) -> Unit, read: (String,Set<String>) -> Unit, select: (String) -> Unit) {
+    val composing = state.selectedTab == MeshScreenTab.COMPOSE
+    val canSend = if (composing) state.selectedDestinationNodeIds.isNotEmpty() else state.destinations.any { it.id == state.peerId && it.canMessage }
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        if (composing) DestinationPicker(state.selectedDestinationNodeIds, state.destinations, select)
+        val list = key(state.peerId) { rememberLazyListState() }
+        val displayed = if (composing) emptyList() else messages
+        val unreadIds = displayed.filter { it.sourceId == state.peerId && it.sourceId to it.messageId in state.unread }.map { it.messageId }.toSet()
+        val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+        LaunchedEffect(state.peerId, unreadIds, lifecycle) {
+            if (unreadIds.isNotEmpty()) lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+                read(state.peerId, unreadIds)
+            }
+        }
+        LaunchedEffect(state.peerId, displayed.lastOrNull()?.messageId) {
+            if (displayed.isNotEmpty() && (list.firstVisibleItemIndex < 2 || displayed.last().sourceId == state.currentNode.nodeId)) list.scrollToItem(0)
+        }
+        if (displayed.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Start the conversation") }
+        else LazyColumn(Modifier.weight(1f), state = list, reverseLayout = true, contentPadding = PaddingValues(vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(displayed.asReversed(), key = { "${it.sourceId.length}:${it.sourceId}${it.messageId}" }) { packet ->
+                val outgoing = packet.sourceId == state.currentNode.nodeId
+                val status = deliveryLabel(state.deliveryStatuses[packet.messageId])
+                Box(Modifier.fillMaxWidth(), contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart) {
+                    Surface(shape = RoundedCornerShape(16.dp), color = if (outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
+                        Column(Modifier.widthIn(max = 300.dp).padding(12.dp)) {
+                            val sender = state.destinations.find { it.id == packet.sourceId }
+                            ParticipantName(if (outgoing) "You" else sender?.name ?: packet.sourceName.ifBlank { packet.sourceId },
+                                !outgoing && sender?.verified == true, MaterialTheme.typography.labelMedium)
+                            Text(packet.payload)
+                            Text(stamp(packet.timestamp) + if (outgoing) " · $status" else "", style = MaterialTheme.typography.labelSmall)
+                            if (outgoing && status == "Failed") {
+                                Text(state.deliveryStatuses[packet.messageId]?.removePrefix("Failed: ") ?: "Delivery unconfirmed", style = MaterialTheme.typography.bodySmall)
+                                TextButton({ retry(packet) }, enabled = canSend && state.isNetworkingActive) { Text("Retry") }
+                            }
+                        }
+                    }
                 }
             }
-
-            Text(packet.payload, style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
-
-            if (failed) {
-                Column(
-                    Modifier.fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(10.dp))
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        if (timedOut) "No delivery confirmation received. The message may still have reached the recipient."
-                        else status.orEmpty().removePrefix("Failed:").trim(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                    Text(
-                        "Check that mesh networking is on and a neighbor is connected before sending again.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                }
-            } else if (isSentFromHere && !confirmed && status != null) {
-                Text(status, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-            }
-
-            // Each technical field gets the full width, including long node IDs and large font sizes.
-            Column(
-                Modifier.fillMaxWidth().background(CodeLogBackground, RoundedCornerShape(10.dp)).padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text("From: ${packet.sourceName.ifBlank { packet.sourceId }}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                Text("To: ${packet.destinationName.ifBlank { packet.destinationId }}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                Text(
-                    "Hops: ${packet.hopCount}  ·  TTL: ${packet.ttl}",
-                    style = MaterialTheme.typography.bodySmall, color = TextSecondary
-                )
-                if (packet.routeHistory.isNotEmpty()) {
-                    Text(
-                        "${if (failed) "Recorded path" else "Path"}: ${packet.routeHistory.joinToString(" → ")}",
-                        style = MaterialTheme.typography.bodySmall, color = TextSecondary
-                    )
-                }
-                Text(
-                    if (isDeliveredHere) "CRC verified on receipt"
-                    else if (isSentFromHere) "CRC generated locally · not a delivery confirmation"
-                    else "CRC checked at this relay · not a delivery confirmation",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (isDeliveredHere) MeshGreenAccent else TextSecondary
-                )
-            }
+        }
+        val tooLong = state.messageInputText.trim().toByteArray().size > 2000
+        val hint = when {
+            state.composeError.isNotEmpty() -> state.composeError
+            tooLong -> "Message exceeds 2,000 UTF-8 bytes"
+            !state.isNetworkingActive -> "Start mesh networking in Nearby to send."
+            !composing && state.destinations.any { it.id == state.peerId && it.blocked } -> "You blocked this participant."
+            !canSend && !composing -> "Waiting for this participant’s public profile."
+            else -> null
+        }
+        hint?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(state.messageInputText, edit, modifier = Modifier.weight(1f), maxLines = 4,
+                label = { Text("Message") }, isError = tooLong)
+            Spacer(Modifier.width(8.dp))
+            Button(send, enabled = canSend && state.isNetworkingActive && state.messageInputText.isNotBlank() && !tooLong) { Text("Send") }
         }
     }
 }

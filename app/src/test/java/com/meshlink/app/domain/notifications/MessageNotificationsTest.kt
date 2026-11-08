@@ -1,5 +1,7 @@
 package com.meshlink.app.domain.notifications
 
+import com.meshlink.app.data.transport.framing.encode
+
 import com.meshlink.app.data.preferences.*
 import com.meshlink.app.domain.models.MessagePacket
 import com.meshlink.app.domain.routing.AodvEngine

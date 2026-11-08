@@ -26,6 +26,16 @@ class ReceivedMessageStore(private val storage: PreferenceStorage) {
         storage.put("received",json.encodeToString(inbox))
         return true
     }
+    @Synchronized fun messages(local: String) = inbox.messages.filter { it.localId == local }.map { it.packet }
+    @Synchronized fun removeMessages(local: String, matches: (MessagePacket) -> Boolean) {
+        val next = inbox.copy(messages = inbox.messages.filterNot { it.localId == local && matches(it.packet) })
+        storage.put("received", json.encodeToString(next))
+        inbox = next
+    }
+    @Synchronized fun clearMessages(local: String) {
+        inbox = inbox.copy(messages = inbox.messages.filterNot { it.localId == local })
+        storage.put("received",json.encodeToString(inbox))
+    }
     @Synchronized fun find(local: String, target: NotificationTarget): MessagePacket? = inbox.messages.lastOrNull {
         it.localId == local && it.packet.messageId == target.messageId && it.packet.sourceId == target.senderId
     }?.packet
@@ -53,7 +63,8 @@ class DeliveredMessageNotifications(
         val friendly = safeName(senderName(packet.sourceId).orEmpty()).ifBlank { safeName(packet.sourceName) }
         val sender = friendly.ifBlank { "Node ${safeName(packet.sourceId).take(12).ifBlank { "unknown" }}" }
         try {
-            post(MessageNotification(NotificationTarget(packet.messageId,packet.sourceId), sender,
+            post(MessageNotification(NotificationTarget(packet.messageId,packet.sourceId),
+                packet.group?.let { safeName(it.chat.name) + " · " + sender } ?: sender,
                 packet.payload.take(4000),prefs.hideLockScreenPreview))
         } catch (_: Exception) {
             // Notification failure must not prevent message receipt or the destination acknowledgment.

@@ -18,13 +18,14 @@ import com.meshlink.app.presentation.viewmodels.MeshUiState
 @Composable
 fun SettingsScreen(state: MeshUiState, onBack: () -> Unit, onTheme: (ThemeMode) -> Unit,
     onNotifications: (Boolean) -> Unit, onPrivatePreview: (Boolean) -> Unit,
-    onPermission: () -> Unit, onSystemSettings: () -> Unit, onIdentity: () -> Unit) {
+    onPermission: () -> Unit, onSystemSettings: () -> Unit, onIdentity: () -> Unit, navigate: (com.meshlink.app.presentation.viewmodels.MeshScreenTab) -> Unit) {
     BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(Modifier.fillMaxWidth(),verticalAlignment = Alignment.CenterVertically,horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Settings",style = MaterialTheme.typography.headlineMedium)
             TextButton(onClick = onBack) { Text("Done") }
         }
+        OutlinedButton(onClick = onIdentity, modifier = Modifier.fillMaxWidth()) { Text("Edit my profile") }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("Appearance",style = MaterialTheme.typography.titleLarge)
@@ -55,10 +56,11 @@ fun SettingsScreen(state: MeshUiState, onBack: () -> Unit, onTheme: (ThemeMode) 
                     Switch(checked = state.preferences.hideLockScreenPreview,onCheckedChange = onPrivatePreview)
                 }
                 Text("Android's channel, lock-screen and Do Not Disturb settings take priority. Changing preview privacy clears existing MeshLink notifications.",style = MaterialTheme.typography.bodySmall)
-                Text("Foreground only: keep MeshLink open and networking active to receive. Notifications do not keep BLE running when the app is closed or stopped.",style = MaterialTheme.typography.bodySmall)
+                Text("Start mesh networking to receive while the screen is locked. The mesh service has its own status notification.",style = MaterialTheme.typography.bodySmall)
             }
         }
-        OutlinedButton(onClick = onIdentity,modifier = Modifier.fillMaxWidth()) { Text("Edit local node identity") }
-        Spacer(Modifier.height(16.dp))
+        Text("Advanced",style = MaterialTheme.typography.titleMedium)
+        OutlinedButton({ navigate(com.meshlink.app.presentation.viewmodels.MeshScreenTab.DIAGNOSTICS) }) { Text("Diagnostics") }
+        OutlinedButton({ navigate(com.meshlink.app.presentation.viewmodels.MeshScreenTab.PHYSICAL) }) { Text("Physical BLE Test Configuration") }
     }
 }

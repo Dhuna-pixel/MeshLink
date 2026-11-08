@@ -1,259 +1,82 @@
 package com.meshlink.app.ui.screens
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CastConnected
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.LinkOff
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.WifiFind
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import com.meshlink.app.ui.components.ParticipantName
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.meshlink.app.domain.network.DemoTopology
 import com.meshlink.app.domain.models.Node
 import com.meshlink.app.domain.models.NodeStatus
 import com.meshlink.app.presentation.viewmodels.MeshUiState
-import com.meshlink.app.ui.components.NodeStatusBadge
-import com.meshlink.app.ui.theme.MeshCyanPrimary
-import com.meshlink.app.ui.theme.MeshBackground
-import com.meshlink.app.ui.theme.MeshSurface
-import com.meshlink.app.ui.theme.MeshGreenAccent
-import com.meshlink.app.ui.theme.MeshRedError
-import com.meshlink.app.ui.theme.TextPrimary
-import com.meshlink.app.ui.theme.TextSecondary
 
 @Composable
-fun NeighborsScreen(
-    uiState: MeshUiState,
-    onConnectToNode: (Node) -> Unit,
-    onDisconnectNode: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MeshBackground)
-            .padding(16.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Nearby & Connected Nodes",
-                style = MaterialTheme.typography.titleLarge,
-                color = TextPrimary
-            )
-
-            if (uiState.isNetworkingActive) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.width(16.dp).height(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MeshCyanPrimary
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Scanning...",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MeshCyanPrimary
-                    )
-                }
-            }
+fun NeighborsScreen(state: MeshUiState, chat: (String) -> Unit, connect: (Node) -> Unit, disconnect: (String) -> Unit,
+    pairing: () -> Unit, compose: () -> Unit, everyone: () -> Unit, setBlocked: (String, Boolean) -> Unit, fingerprint: (String) -> String?) {
+    val sightings = remember(state.discoveredNodes, state.destinations) {
+        // Scanned advertisements carry a short identity token. Only the GATT handshake establishes trust.
+        val advertisedIds = state.destinations.associate { peer ->
+            val token = DemoTopology.identityToken(peer.id).joinToString("") { "%02x".format(it) }
+            "discovered-$token" to peer.id
         }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        if (!uiState.isNetworkingActive) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 32.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.WifiFind,
-                        contentDescription = null,
-                        tint = TextSecondary,
-                        modifier = Modifier.height(48.dp).width(48.dp)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Networking is currently stopped.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = TextSecondary
-                    )
-                    Text(
-                        text = "Start Mesh Networking on the Home screen to discover peers.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                // Section 1: Active Connected Neighbors
-                item {
-                    Text(
-                        text = "ACTIVE NEIGHBORS (${uiState.connectedNodes.size})",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MeshGreenAccent
-                    )
-                }
-
-                if (uiState.connectedNodes.isEmpty()) {
-                    item {
-                        Text(
-                            text = "No active peer connections established yet.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TextSecondary,
-                            modifier = Modifier.padding(vertical = 4.dp)
-                        )
-                    }
-                } else {
-                    items(uiState.connectedNodes) { node ->
-                        NodeItemCard(
-                            node = node,
-                            isConnected = true,
-                            onConnect = { onConnectToNode(node) },
-                            onDisconnect = { onDisconnectNode(node.nodeId) }
-                        )
-                    }
-                }
-
-                item { Spacer(modifier = Modifier.height(12.dp)) }
-
-                // Section 2: Discovered Peers
-                item {
-                    Text(
-                        text = "DISCOVERED PEERS (${uiState.discoveredNodes.size})",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MeshCyanPrimary
-                    )
-                }
-
-                if (uiState.discoveredNodes.isEmpty()) {
-                    item {
-                        Text(
-                            text = "Scanning for nearby MeshLink devices over Bluetooth / Wi-Fi...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TextSecondary,
-                            modifier = Modifier.padding(vertical = 4.dp)
-                        )
-                    }
-                } else {
-                    items(uiState.discoveredNodes) { node ->
-                        NodeItemCard(
-                            node = node,
-                            isConnected = false,
-                            onConnect = { onConnectToNode(node) },
-                            onDisconnect = { onDisconnectNode(node.nodeId) }
-                        )
-                    }
-                }
-            }
-        }
+        state.discoveredNodes.sortedBy { it.lastSeenTimestamp }.associateBy { advertisedIds[it.nodeId] ?: it.nodeId }
     }
-}
-
-@Composable
-private fun NodeItemCard(
-    node: Node,
-    isConnected: Boolean,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MeshSurface),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = node.nodeName,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = TextPrimary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    NodeStatusBadge(status = node.status)
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (state.connectNotice.isNotBlank()) item { Text(state.connectNotice) }
+        item { OutlinedButton(pairing) { Text("Pair and verify devices") } }
+        if (state.isNetworkingActive && state.destinations.any { peer -> peer.canMessage &&
+            (state.connectedNodes.any { it.nodeId == peer.id } || state.knownNodes.any { it.nodeId == peer.id }) }) {
+            item { Button(everyone) { Text("Message everyone") } }
+        }
+        if (state.destinations.count { it.canMessage } > 1) item { TextButton(compose) { Text("Message multiple recipients") } }
+        if (state.destinations.isEmpty() && state.discoveredNodes.isEmpty()) item {
+            Text(if (state.isNetworkingActive) "Looking for nearby devices…" else "Start the mesh on both phones to discover devices.")
+        }
+        items(state.destinations, key = { it.id }) { peer ->
+            var details by remember(peer.id) { mutableStateOf(false) }
+            val direct = state.connectedNodes.find { it.nodeId == peer.id }
+            val nearby = sightings[peer.id]
+            val seen = direct ?: nearby ?: state.knownNodes.find { it.nodeId == peer.id }
+            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                ParticipantName(peer.name, peer.verified, MaterialTheme.typography.titleMedium)
+                Text(peer.id, style = MaterialTheme.typography.bodySmall)
+                Text(when {
+                    direct != null -> "Connected · " + peer.status.substringAfterLast(" · ")
+                    nearby?.status == NodeStatus.CONNECTING -> "Connecting…"
+                    nearby != null -> "Not connected · " + peer.status.substringAfterLast(" · ")
+                    else -> peer.status
+                })
+                Text(seen?.let { "Last seen ${stamp(it.lastSeenTimestamp)}" } ?: "Last seen unknown", style = MaterialTheme.typography.bodySmall)
+                Row {
+                    TextButton({ details = true }) { Text("Details") }
+                    if (peer.canMessage) TextButton({ chat(peer.id) }) { Text("Chat") }
+                    else if (peer.blocked) TextButton({ setBlocked(peer.id, false) }) { Text("Unblock") }
+                    if (direct != null) TextButton({ disconnect(peer.id) }) { Text("Disconnect") }
+                    else if (state.isNetworkingActive && nearby?.endpointId != null)
+                        TextButton({ connect(nearby.copy(nodeId = peer.id, nodeName = peer.name, status = NodeStatus.DISCONNECTED)) }, enabled = nearby.status != NodeStatus.CONNECTING) { Text(if (nearby.status == NodeStatus.CONNECTING) "Connecting…" else "Connect") }
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "ID: ${node.nodeId}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                    fontFamily = FontFamily.Monospace
-                )
-                node.endpointId?.let { ep ->
-                    Text(
-                        text = "Endpoint: $ep | Relay Capable: ${if (node.isRelayCapable) "YES" else "NO"}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.outline,
-                        fontSize = 11.sp
-                    )
-                }
-            }
-
-            if (isConnected) {
-                OutlinedButton(
-                    onClick = onDisconnect,
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Icon(imageVector = Icons.Default.LinkOff, contentDescription = null, tint = MeshRedError)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Disconnect", color = MeshRedError)
-                }
-            } else {
-                Button(
-                    onClick = onConnect,
-                    colors = ButtonDefaults.buttonColors(containerColor = MeshCyanPrimary, contentColor = MaterialTheme.colorScheme.onPrimary),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Icon(imageVector = Icons.Default.Link, contentDescription = null)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Connect")
-                }
-            }
+            } }
+            if (details) AlertDialog(onDismissRequest = { details = false }, title = { ParticipantName(peer.name, peer.verified) },
+                text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Node ID")
+                    Text(peer.id)
+                    Text(peer.status)
+                    if (peer.about.isNotBlank()) Text(peer.about)
+                    TextButton({ setBlocked(peer.id, !peer.blocked); details = false }) { Text(if (peer.blocked) "Unblock" else "Block") }
+                    val print = remember(peer.id, peer.canMessage) { fingerprint(peer.id) }
+                    print?.let { Text("Card fingerprint"); Text(it,style = MaterialTheme.typography.bodySmall) }
+                } }, confirmButton = { TextButton({ details = false }) { Text("Done") } })
+        }
+        items(sightings.filterKeys { id -> state.destinations.none { it.id == id } }.values.filter { node -> state.connectedNodes.none { it.endpointId == node.endpointId } }) { node ->
+            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                Text(node.nodeName, style = MaterialTheme.typography.titleMedium)
+                Text(node.nodeId)
+                Text(if (node.endpointId in state.rejectedEndpoints) "Secure connection rejected" else "Nearby · not connected")
+                Text("Last seen ${stamp(node.lastSeenTimestamp)}")
+                TextButton({ connect(node) }, enabled = node.status != NodeStatus.CONNECTING) { Text(if (node.status == NodeStatus.CONNECTING) "Connecting…" else "Connect") }
+            } }
         }
     }
 }

@@ -1,5 +1,7 @@
 # MeshLink Cross-Platform BLE Interoperability Specification
 
+> Historical specification: the current Android app uses a newer service UUID and authenticated TLS/endpoint/group protocol. The legacy iOS implementation has not been migrated. Do not treat this document as a current Android–iOS compatibility guarantee; see [README.md](README.md).
+
 This document details the cross-platform Bluetooth Low Energy (BLE) GATT transport architecture, wire format, discovery protocol, framing specification, and hardware testing instructions for **Android ↔ iOS** multi-hop communication in MeshLink.
 
 ---
