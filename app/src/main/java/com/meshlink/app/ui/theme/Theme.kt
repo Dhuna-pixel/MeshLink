@@ -14,26 +14,30 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
 internal val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFF00E5FF), onPrimary = Color(0xFF002F37),
-    primaryContainer = Color(0xFF004D61), onPrimaryContainer = Color(0xFFC1F4FF),
-    secondary = Color(0xFF66E59B), onSecondary = Color(0xFF00391C),
-    secondaryContainer = Color(0xFF004D25), onSecondaryContainer = Color(0xFFB0F7C7),
-    tertiary = Color(0xFFCEB7FF), onTertiary = Color(0xFF32105F),
-    background = Color(0xFF0F172A), onBackground = Color(0xFFF1F5F9),
-    surface = Color(0xFF1E293B), onSurface = Color(0xFFF1F5F9),
-    surfaceVariant = Color(0xFF334155), onSurfaceVariant = Color(0xFFCBD5E1),
-    outline = Color(0xFF94A3B8), error = Color(0xFFFFB4AB), onError = Color(0xFF690005)
+    primary = Color(0xFF82D8CF), onPrimary = Color(0xFF003732),
+    primaryContainer = Color(0xFF193F3C), onPrimaryContainer = Color(0xFFBEF1EA),
+    secondary = Color(0xFF91D5AD), onSecondary = Color(0xFF103825),
+    secondaryContainer = Color(0xFF254535), onSecondaryContainer = Color(0xFFBCEED0),
+    tertiary = Color(0xFFC8B8E8), onTertiary = Color(0xFF34264D),
+    tertiaryContainer = Color(0xFF3F354F), onTertiaryContainer = Color(0xFFEBDDFB),
+    background = Color(0xFF101414), onBackground = Color(0xFFF0F1EB),
+    surface = Color(0xFF191E1E), onSurface = Color(0xFFF0F1EB),
+    outlineVariant = Color(0xFF35423E), surfaceTint = Color(0xFF82D8CF),
+    surfaceVariant = Color(0xFF252D2D), onSurfaceVariant = Color(0xFFB8C5C2),
+    outline = Color(0xFF82938F), error = Color(0xFFFFB4A8), onError = Color(0xFF690005)
 )
 internal val LightColorScheme = lightColorScheme(
-    primary = Color(0xFF006779), onPrimary = Color.White,
-    primaryContainer = Color(0xFFB9EEFA), onPrimaryContainer = Color(0xFF001F26),
-    secondary = Color(0xFF006D3B), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFB6F2CE), onSecondaryContainer = Color(0xFF002110),
-    tertiary = Color(0xFF67409B), onTertiary = Color.White,
-    background = Color(0xFFF6F8FC), onBackground = Color(0xFF172234),
-    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF172234),
-    surfaceVariant = Color(0xFFE3EAF1), onSurfaceVariant = Color(0xFF3E5062),
-    outline = Color(0xFF64748B), error = Color(0xFFBA1A1A), onError = Color.White
+    primary = Color(0xFF006B62), onPrimary = Color.White,
+    primaryContainer = Color(0xFFB9EEE4), onPrimaryContainer = Color(0xFF00201D),
+    secondary = Color(0xFF286847), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFBAEED0), onSecondaryContainer = Color(0xFF002110),
+    tertiary = Color(0xFF695581), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFECDFF7), onTertiaryContainer = Color(0xFF28163D),
+    background = Color(0xFFF6F7F2), onBackground = Color(0xFF192320),
+    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF192320),
+    outlineVariant = Color(0xFFCDD8D1), surfaceTint = Color(0xFF006B62),
+    surfaceVariant = Color(0xFFE6ECE6), onSurfaceVariant = Color(0xFF44544F),
+    outline = Color(0xFF74847E), error = Color(0xFFB32625), onError = Color.White
 )
 
 @Composable
@@ -52,5 +56,5 @@ fun MeshLinkTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composab
             if (Build.VERSION.SDK_INT < 26 && !darkTheme) window.navigationBarColor = DarkColorScheme.background.toArgb()
         }
     }
-    MaterialTheme(colorScheme = colors, typography = Typography, content = content)
+    MaterialTheme(colorScheme = colors, typography = Typography, shapes = MeshShapes, content = content)
 }

@@ -75,9 +75,9 @@ object EndToEnd {
             body.context.verify(p.sourceId, p.destinationId)
             require(body.context.chat.member(p.sourceId)?.cert()?.publicKey == sender)
             require(body.text.toByteArray().size <= 2000)
-            return p.copy(payload = body.text, group = body.context)
+            return p.copy(payload = body.text, group = body.context, voice = null, voiceAudio = null)
         }
         require(plain.size <= 2000)
-        return p.copy(payload = plain.toString(Charsets.UTF_8))
+        return p.copy(payload = plain.toString(Charsets.UTF_8), voice = null, voiceAudio = null)
     }
 }

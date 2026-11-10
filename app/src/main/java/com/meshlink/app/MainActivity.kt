@@ -148,6 +148,7 @@ class MainActivity : ComponentActivity() {
         val systemDark = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
         setTheme(if (savedPreferences.theme.isDark(systemDark)) R.style.Theme_MeshLink_Dark else R.style.Theme_MeshLink_Light)
         super.onCreate(savedInstanceState)
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         if (savedInstanceState == null) AndroidMessageNotifier.target(intent)?.let(viewModel::openNotification)
         // Activity Result can arrive while STARTED; onPostResume may precede Lifecycle ON_RESUME.
         lifecycle.addObserver(LifecycleEventObserver { _, event ->

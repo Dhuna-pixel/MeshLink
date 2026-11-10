@@ -1,0 +1,11 @@
+# Offline speech disconnect recovery
+
+Changed OfflineSpeechInput.kt, MessagingScreen.kt and SpeechDraftTest.kt only, plus this report. Prior work is retained.
+
+Audit: previously onError marked the draft inactive but left the service instance alive until another attempt or teardown, and partial results were ignored. There was no explicit active-session guard on start. The new session token rejects obsolete results, partials, errors and end-of-speech events. Each user attempt creates a new on-device recognizer. Terminal results/errors invalidate the token before cancel and destroy; both cleanup operations are independently attempted. No automatic restart, cloud fallback, stopListening or transport work is introduced. Android delivers RecognitionListener callbacks on the main application thread; entry and cleanup operations assert main-thread ownership.
+
+Error 11 now explains the disconnection and allows manual retry. The latest nonempty partial result is appended once on failure, preserving the current composer text exactly. Cancellation intentionally discards unfinished speech. Permission requests cannot overlap; stale permission results after stop/disposal are ignored. Lifecycle stop cancels capture and disposal prevents future starts. The direct-message composer is keyed by recipient and screen mode to dispose capture when navigating between conversations.
+
+Unit coverage: disconnect-style terminal failure followed by manual retry; latest partial retention; overlapping start rejection; cancel/immediate restart; obsolete callbacks; exact composer preservation; teardown and rejection of new capture. These are state-machine tests, not a simulation of the Samsung recognition service or Android Binder cleanup.
+
+Physical checks on both Samsung devices: repeatedly dictate offline; reproduce service disconnection and verify friendly message, preserved partial and successful manual retry; rapid taps; cancel/restart; background/rotate/navigate during recognition and permission prompts; deny/revoke permission; missing offline language model; send encrypted messages over BLE while dictating. Check that microphone capture ends on error/cancel/background and never restarts without a tap.

@@ -19,11 +19,15 @@ object BleFragments {
 }
 
 class FragmentAssembler(private val now: () -> Long = { System.nanoTime() / 1_000_000 }) {
-    private data class Transfer(val count: Int, val total: Int, val started: Long, val parts: MutableMap<Int, ByteArray> = mutableMapOf())
+    private data class Transfer(val count: Int, val total: Int, val started: Long, var progressed: Long = started, val parts: MutableMap<Int, ByteArray> = mutableMapOf())
     private val transfers = linkedMapOf<Int, Transfer>()
-    @Synchronized fun expire() { transfers.entries.removeAll { now() - it.value.started >= 10_000 } }
+    @Synchronized fun expire(): Int {
+        val before=transfers.size
+        transfers.entries.removeAll { now() - it.value.progressed >= 10_000 || now() - it.value.started >= 60_000 }
+        return before-transfers.size
+    }
     @Synchronized fun accept(bytes: ByteArray): ByteArray? {
-        expire()
+        check(expire() == 0) { "Fragment expired: TLS stream lost bytes" }
         require(bytes.size in (BleFragments.HEADER + 1)..512) { "Invalid fragment size" }
         val b = ByteBuffer.wrap(bytes)
         require(b.get() == 0x4d.toByte()) { "Unsupported fragment format" }
@@ -40,6 +44,7 @@ class FragmentAssembler(private val now: () -> Long = { System.nanoTime() / 1_00
         val part = bytes.copyOfRange(BleFragments.HEADER, bytes.size)
         val old = transfer.parts[index]
         require(old == null || old.contentEquals(part)) { "Conflicting duplicate fragment" }
+        if (old == null) transfer.progressed = now()
         transfer.parts[index] = part
         if (transfer.parts.values.sumOf { it.size } > total) {
             transfers.remove(id)

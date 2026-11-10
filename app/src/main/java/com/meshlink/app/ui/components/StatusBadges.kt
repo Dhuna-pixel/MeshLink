@@ -51,7 +51,7 @@ fun NodeStatusBadge(
         Text(
             text = label,
             color = textColor,
-            fontSize = 10.sp,
+            fontSize = 11.sp,
             style = MaterialTheme.typography.labelSmall
         )
     }
@@ -72,7 +72,7 @@ fun LogLevelBadge(
     Text(
         text = label,
         color = textColor,
-        fontSize = 9.sp,
+        fontSize = 11.sp,
         style = MaterialTheme.typography.labelSmall,
         modifier = modifier
             .background(bgColor, RoundedCornerShape(4.dp))

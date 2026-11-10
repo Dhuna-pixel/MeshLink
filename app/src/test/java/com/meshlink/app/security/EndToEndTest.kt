@@ -49,6 +49,10 @@ class EndToEndTest {
         val failure = runCatching { open(sealed.copy(payload = JsonObject(fields).toString())) }.exceptionOrNull()
         assertTrue(failure is javax.crypto.AEADBadTagException)
     }
+    @Test fun networkCannotInjectLocalVoiceAudio() {
+        val sealed = EndToEnd.seal(message,sign.private,wrap.public)
+        assertNull(open(sealed.copy(voiceAudio = "forged local audio")).voiceAudio)
+    }
     @Test fun generatesFreshContentKeysAndNonces() {
         val envelopes=(1..32).map { Json.parseToJsonElement(EndToEnd.seal(message,sign.private,wrap.public).payload).jsonObject }
         assertEquals(32,envelopes.map { it["iv"] }.distinct().size)

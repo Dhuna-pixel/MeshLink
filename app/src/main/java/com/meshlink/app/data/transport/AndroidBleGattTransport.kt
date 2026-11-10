@@ -102,16 +102,30 @@ class BlePeerSession(
     @Volatile var state: BleConnectionState = BleConnectionState.DISCOVERED,
     var negotiatedMtu: Int = 23,
     val reassembler: FragmentAssembler = FragmentAssembler(),
+    @Volatile var writeStarted: Long? = null,
     @Volatile var completion: CompletableDeferred<Int>? = null,
     var lastSeen: Long = System.currentTimeMillis(),
     val txMutex: Mutex = Mutex()
 ) {
-    internal val tlsEvents = Channel<TlsEvent>(256)
+    internal val queueBudget = BleQueueBudget()
+    internal val tlsEvents = FairMailbox<TlsEvent> { event ->
+        when(event) {
+            is TlsEvent.Incoming -> 0
+            is TlsEvent.Outgoing -> if(event.packet.control != null || event.packet.ackFor != null) 1 else 2
+        }
+    }
     internal var worker: Job? = null
     internal val created = android.os.SystemClock.elapsedRealtime()
     internal var rateStart = 0L
     internal var receivedCount = 0
-    internal fun close() { tlsEvents.close(); worker?.cancel() }
+    @Volatile internal var closedBy: String? = null
+    @Volatile internal var lastAuthenticatedRx: Long? = null
+    @Synchronized internal fun close(reason: String) {
+        if (closedBy == null) closedBy = reason
+        state = BleConnectionState.DISCONNECTING
+        completion?.complete(BluetoothGatt.GATT_FAILURE)
+        tlsEvents.close(); worker?.cancel(kotlinx.coroutines.CancellationException("BLE session closed"))
+    }
 
     val usableChunkSize: Int
         get() = (negotiatedMtu - 3).coerceIn(20, 512)
@@ -155,6 +169,13 @@ class AndroidBleGattTransport(
     private val transportScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _events = MutableSharedFlow<TransportEvent>(extraBufferCapacity = 512)
+    // Diagnostics never compete with packet receipts or disconnect notifications.
+    private val _diagnostics = MutableSharedFlow<NetworkLogEntry>(extraBufferCapacity = 64, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    val diagnostics = _diagnostics.asSharedFlow()
+    private val criticalEvents = Channel<TransportEvent>(512)
+    private val eventPump = kotlinx.coroutines.CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+        for (event in criticalEvents) _events.emit(event)
+    }
     override val events: SharedFlow<TransportEvent> = _events.asSharedFlow()
 
     private val _isRunning = MutableStateFlow(false)
@@ -194,7 +215,7 @@ class AndroidBleGattTransport(
         demoTopology = topology
     }
     fun isReadyPeer(nodeId: String, endpoint: String?): Boolean = peerSessions[endpoint ?: ""]?.let {
-        it.state == BleConnectionState.READY && it.nodeId == nodeId && demoTopology.permits(nodeId)
+        it.state == BleConnectionState.READY && it.worker?.isActive == true && it.nodeId == nodeId && demoTopology.permits(nodeId)
     } == true
     private fun permittedCandidate(nodeId: String): Boolean = !demoTopology.enabled || demoTopology.permittedIds.any {
         it == nodeId || "discovered-${hex(token(it))}" == nodeId
@@ -279,7 +300,19 @@ class AndroidBleGattTransport(
                 }
                 connectionPolicy.stale().filter { !peerSessions.containsKey(it) }.forEach { emitEvent(TransportEvent.NodeLost(it)) }
                 peerSessions.values.forEach { session ->
-                    session.reassembler.expire()
+                    if (session.reassembler.expire() > 0) {
+                        emitLog("BLE-HEALTH", "category=fragment_expired session=${session.created}; TLS stream reset required", LogLevel.WARNING)
+                        disconnectNode(session.nodeId ?: session.address)
+                        return@forEach
+                    }
+                    val unhealthy = BleSessionHealth.failure(session.state == BleConnectionState.READY,
+                        session.worker?.isActive == true, session.writeStarted, android.os.SystemClock.elapsedRealtime(), session.lastAuthenticatedRx)
+                    if (unhealthy != null) {
+                        emitLog("BLE-HEALTH", "category=$unhealthy peer=${session.nodeId} session=${session.created} depth=${session.queueBudget.depth()}", LogLevel.WARNING)
+                        emitEvent(TransportEvent.ErrorOccurred("Recovering Bluetooth link: $unhealthy"))
+                        disconnectNode(session.nodeId ?: session.address)
+                        return@forEach
+                    }
                     if (BleConnectionPolicy.sessionExpired(android.os.SystemClock.elapsedRealtime() - session.created, session.state == BleConnectionState.READY)) {
                         disconnectNode(session.nodeId ?: session.address)
                     }
@@ -301,7 +334,7 @@ class AndroidBleGattTransport(
             stopAdvertising()
 
             for ((_, session) in peerSessions) {
-                session.close()
+                session.close("local:mesh_stop")
                 try {
                     session.gatt?.disconnect()
                     session.gatt?.close()
@@ -403,7 +436,7 @@ class AndroidBleGattTransport(
                 session.completion?.complete(BluetoothGatt.GATT_FAILURE)
                 session.gatt?.close()
                 session.state = BleConnectionState.DISCONNECTED
-                peerSessions.remove(address)?.close()
+                peerSessions.remove(address)?.close("remote:gatt_disconnect status=$status")
                 val node = endpointToNodeMap.remove(address)
                 val nodeId = node?.nodeId ?: session.nodeId ?: address
                 nodeToEndpointMap.remove(nodeId, address)
@@ -672,7 +705,7 @@ class AndroidBleGattTransport(
             }
             // A server-side ACL callback alone does not establish a usable GATT session.
             peerSessions.remove(address, existing)
-            existing.close()
+            existing.close("local:replace_unsubscribed_acl")
         }
         if (peerSessions.size >= maxConnections) return "All direct connection slots are in use."
         if (!connectionPolicy.mayConnect(address, peerSessions.size)) return "Waiting to retry the Bluetooth connection."
@@ -705,12 +738,16 @@ class AndroidBleGattTransport(
     @SuppressLint("MissingPermission")
     @Synchronized override fun disconnectNode(nodeId: String) {
         val address = nodeToEndpointMap[nodeId] ?: peerSessions.values.find { it.nodeId == nodeId }?.address ?: nodeId
-        val session = peerSessions.remove(address)?.also { it.close() }
+        val session = peerSessions.remove(address)?.also {
+            val origin=Throwable().stackTrace.drop(1).take(4).joinToString(" <- ")
+            it.close("local:disconnect origin=$origin")
+            emitLog("BLE-WORKER", "event=close generation=${it.created} reason=${it.closedBy}")
+        }
         if (session != null) {
             session.state = BleConnectionState.DISCONNECTING
             try {
                 session.completion?.complete(BluetoothGatt.GATT_FAILURE)
-                if (session.gatt == null) gattServer?.cancelConnection(session.device)
+                gattServer?.cancelConnection(session.device)
                 session.gatt?.disconnect()
                 session.gatt?.close()
             } catch (e: Exception) {
@@ -747,7 +784,8 @@ class AndroidBleGattTransport(
             negotiatedMtu = old?.negotiatedMtu ?: 23, state = BleConnectionState.CHARACTERISTICS_READY)
         peerSessions[address] = session
         if (old != null) {
-            old.close()
+            old.close("local:cccd_subscription_replacement")
+            emitLog("BLE-WORKER","event=replace old=${old.created} new=${session.created} original=${old.closedBy}")
             old.gatt?.close()
             endpointToNodeMap.remove(address)?.let { previous ->
                 nodeToEndpointMap.remove(previous.nodeId, address)
@@ -785,7 +823,7 @@ class AndroidBleGattTransport(
                 session.completion?.complete(BluetoothGatt.GATT_FAILURE)
                 session.gatt?.close()
                 session.state = BleConnectionState.DISCONNECTED
-                peerSessions.remove(address)?.close()
+                peerSessions.remove(address)?.close("remote:gatt_disconnect status=$status")
                 val node = endpointToNodeMap.remove(address)
                 val nodeId = node?.nodeId ?: session.nodeId ?: address
                 nodeToEndpointMap.remove(nodeId, address)
@@ -924,6 +962,7 @@ class AndroidBleGattTransport(
                             val neighbor = Node(pin.id, session.displayName!!, status = NodeStatus.CONNECTED, endpointId = session.address)
                             endpointToNodeMap[session.address] = neighbor
                             nodeToEndpointMap[pin.id] = session.address
+                            session.lastAuthenticatedRx = android.os.SystemClock.elapsedRealtime()
                             session.state = BleConnectionState.READY
                             rejectedEndpoints.value = rejectedEndpoints.value - session.address
                             connectionPolicy.ready(session.address)
@@ -939,17 +978,21 @@ class AndroidBleGattTransport(
                         require(packet.sourceId.length in 1..80 && packet.messageId.length in 1..200 &&
                             packet.destinationId.length <= 80 && packet.routeHistory.size <= 32 && packet.returnPath.size <= 32)
                         if (packet.control != null) require(packet.sourceId == pin.id && packet.control.unreachable.size <= 64)
+                        session.lastAuthenticatedRx = android.os.SystemClock.elapsedRealtime()
                         emitLog("CRC-PASS", "CRC and TLS verified from " + pin.id)
                         emitEvent(TransportEvent.PacketReceived(packet, session.address))
                     }
                 })
                 pipe.begin()
-                for (event in session.tlsEvents) {
+                while (true) {
+                    val event = session.tlsEvents.receive()
                     require(!BleConnectionPolicy.sessionExpired(android.os.SystemClock.elapsedRealtime() - session.created,
                         session.state == BleConnectionState.READY)) { "Session expired" }
                     when (event) {
                         is TlsEvent.Incoming -> pipe.receive(event.bytes)
                         is TlsEvent.Outgoing -> {
+                            session.queueBudget.release(event.packet.control != null || event.packet.ackFor != null)
+                            emitLog("BLE-QUEUE", "event=dequeue packet=${event.packet.messageId} depth=${session.queueBudget.depth()} writeOutstanding=${session.completion != null}")
                             require(peer?.let { identity.linkCard(it.id)?.sameKeys(it) == true } == true)
                             pipe.send(JsonSerializer.packetToBytes(event.packet))
                             emitEvent(TransportEvent.PacketSent(event.packet, session.address))
@@ -962,10 +1005,16 @@ class AndroidBleGattTransport(
                             nodeId = current.nodeId, displayName = current.nodeName, profile = identity.profile(current).export())).toByteArray())
                     }
                 }
-            } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                emitLog("BLE-WORKER", "event=exit generation=${session.created} category=${if (cancel is kotlinx.coroutines.TimeoutCancellationException) "timeout" else "canceled"} original=${session.closedBy ?: "worker_or_parent_cancellation"} depth=${session.queueBudget.depth()}", LogLevel.WARNING)
+                throw cancel
+            }
             catch (e: Exception) {
                 reject(session.address)
-                emitLog("SECURITY", "Secure session rejected: " + e.javaClass.simpleName, LogLevel.WARNING)
+                emitLog("SECURITY", "session=${session.created} peer=${session.nodeId} exception=${e.javaClass.simpleName} at ${e.stackTrace.take(8).joinToString(" <- ")}", LogLevel.WARNING)
+                if (peerSessions[session.address] === session) disconnectNode(session.address)
+            } finally {
+                // A dead TLS worker must never leave a READY session accepting new packets.
                 if (peerSessions[session.address] === session) disconnectNode(session.address)
             }
         }
@@ -975,7 +1024,20 @@ class AndroidBleGattTransport(
         val endpoint = nodeToEndpointMap[targetEndpointId] ?: targetEndpointId
         val session = peerSessions[endpoint] ?: return false
         if (session.state != BleConnectionState.READY || !demoTopology.permits(session.nodeId.orEmpty())) return false
-        return session.tlsEvents.trySend(TlsEvent.Outgoing(packet)).isSuccess
+        if (session.worker?.isActive != true) {
+            emitLog("BLE-QUEUE", "event=reject packet=${packet.messageId} category=worker_inactive", LogLevel.WARNING)
+            disconnectNode(session.address)
+            return false
+        }
+        val priority = packet.control != null || packet.ackFor != null
+        if (!session.queueBudget.acquire(priority)) {
+            emitLog("BLE-QUEUE", "event=reject packet=${packet.messageId} category=backpressure priority=$priority depth=${session.queueBudget.depth()}")
+            return false
+        }
+        val accepted = session.tlsEvents.offer(TlsEvent.Outgoing(packet))
+        if (!accepted) session.queueBudget.release(priority)
+        emitLog("BLE-QUEUE", "event=admit packet=${packet.messageId} accepted=$accepted priority=$priority depth=${session.queueBudget.depth()} writeOutstanding=${session.completion != null}")
+        return accepted
     }
 
     override fun broadcastPacket(packet: MessagePacket, excludeEndpointIds: Set<String>): Int {
@@ -993,6 +1055,8 @@ class AndroidBleGattTransport(
                     suspend fun operation() {
                         val completion = CompletableDeferred<Int>()
                         session.completion = completion
+                        session.writeStarted = android.os.SystemClock.elapsedRealtime()
+                        emitLog("BLE-WRITE", "event=start bytes=${chunk.size} depth=${session.queueBudget.depth()}")
                         try {
                             val gatt = session.gatt
                             val accepted = if (gatt != null) {
@@ -1011,8 +1075,8 @@ class AndroidBleGattTransport(
                                 else { characteristic.value = chunk; server.notifyCharacteristicChanged(session.device, characteristic, true) }
                             }
                             check(accepted) { "GATT operation rejected" }
-                            check(withTimeout(8_000) { completion.await() } == BluetoothGatt.GATT_SUCCESS) { "GATT operation failed" }
-                        } finally { session.completion = null }
+                            check(awaitGattWrite(completion) == BluetoothGatt.GATT_SUCCESS) { "GATT operation failed" }
+                        } finally { session.completion = null; session.writeStarted = null; emitLog("BLE-WRITE", "event=release completed=${completion.isCompleted} depth=${session.queueBudget.depth()}") }
                     }
                     if (session.gatt == null) serverTxMutex.withLock { operation() } else operation()
                 }
@@ -1030,11 +1094,12 @@ class AndroidBleGattTransport(
     // =========================================================================
     // INBOUND REASSEMBLY & CRC VERIFICATION PIPELINE
     // =========================================================================
-    private fun handleIncomingRawChunk(chunk: ByteArray, session: BlePeerSession) {
+    @Synchronized private fun handleIncomingRawChunk(chunk: ByteArray, session: BlePeerSession) {
+        if (peerSessions[session.address] !== session || session.closedBy != null) return
         val bytes = try { session.reassembler.accept(chunk) } catch (e: IllegalArgumentException) {
-            emitLog("FRAGMENT", "Rejected fragment: ${e.message}", LogLevel.WARNING); return
+            emitLog("FRAGMENT", "category=invalid_fragment session=${session.created}; closing TLS stream", LogLevel.WARNING); disconnectNode(session.address); return
         } catch (e: IllegalStateException) {
-            emitLog("FRAGMENT", "Rejected transfer: ${e.message}", LogLevel.WARNING); return
+            emitLog("FRAGMENT", "category=lost_frame session=${session.created}; closing TLS stream", LogLevel.WARNING); disconnectNode(session.address); return
         } ?: return
         val result = MeshLinkFrame.decode(bytes)
         if (result !is MeshLinkFrame.FrameResult.Success || result.frameType != MeshLinkFrame.FRAME_TYPE_TLS) {
@@ -1045,7 +1110,7 @@ class AndroidBleGattTransport(
             return
         }
         sendHandshakeToPeer(session)
-        if (!session.tlsEvents.trySend(TlsEvent.Incoming(result.payload)).isSuccess) disconnectNode(session.address)
+        if (!session.tlsEvents.offer(TlsEvent.Incoming(result.payload))) disconnectNode(session.address)
     }
 
     // =========================================================================
@@ -1065,10 +1130,16 @@ class AndroidBleGattTransport(
             packetSummary = packetSummary,
             relatedNodeId = nodeId
         )
-        emitEvent(TransportEvent.LogEmitted(entry))
+        // Logcat is intentionally separate from the lossless routing-event pipeline.
+        Log.i(TAG, "${entry.tag}: $message")
+        _diagnostics.tryEmit(entry)
     }
 
     private fun emitEvent(event: TransportEvent) {
-        if (!_events.tryEmit(event)) Log.e(TAG, "Transport event buffer full: ${event.javaClass.simpleName}")
+        if (!criticalEvents.trySend(event).isSuccess) {
+            Log.e(TAG, "event=critical_overflow category=${event.javaClass.simpleName}; stopping Mesh to avoid stale routing state")
+            // Bounded fail-closed behavior, never silently lose an ACK/disconnect while claiming READY.
+            if (_isRunning.value) stop()
+        }
     }
 }

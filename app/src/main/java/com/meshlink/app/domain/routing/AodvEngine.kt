@@ -76,10 +76,13 @@ class AodvEngine(
     }
     private fun control(c: RouteControl, peer: String? = null, except: String? = null) {
         val packet = MessagePacket("CTRL-${c.requestId}-${c.kind}", id, name, c.destination, payload = "", control = c)
-        if (peer != null) transmit(peer, packet) else neighbors.filter { it != except }.forEach { transmit(it, packet) }
+        val targets = if (peer != null) listOf(peer) else neighbors.filter { it != except }
+        if (targets.isEmpty()) log("control=${c.kind} packet=${packet.messageId} category=no_neighbor")
+        targets.forEach { next -> log("control=${c.kind} packet=${packet.messageId} next=$next accepted=${transmit(next,packet)} pending=${pending.size}") }
     }
     @Synchronized fun neighborUp(peer: String) { neighbors.add(peer); announce() }
     @Synchronized fun neighborDown(peer: String) {
+        log("neighbor_down=$peer pending=${pending.size}")
         neighbors.remove(peer)
         invalidateVia(peer)
     }
@@ -119,12 +122,14 @@ class AodvEngine(
         val discovering = mutableSetOf<String>()
         for ((key, p) in pending.toMap()) {
             if (now() - p.started >= 120_000 || (p.attempt >= 3 && now() >= p.retryAt)) {
+                log("packet=$key category=retry_exhausted attempts=${p.attempt} awaitingTransfer=${p.awaitingTransfer} route=${route(p.packet.destinationId)?.nextHop} pending=${pending.size}")
                 pending.remove(key); status(key, if (neighbors.isEmpty()) "Failed: no connected mesh devices" else "Failed: delivery acknowledgment timed out"); continue
             }
             if (now() < p.retryAt || neighbors.isEmpty()) continue
             val r = route(p.packet.destinationId)
             if (r != null) {
                 val accepted = transmit(r.nextHop, p.packet)
+                log("packet=$key event=dispatch next=${r.nextHop} accepted=$accepted attempt=${p.attempt + 1} awaitingAck=true")
                 p.awaitingTransfer = accepted
                 if (accepted) status(key, "Sending over Bluetooth")
                 else invalidateVia(r.nextHop)
@@ -162,7 +167,9 @@ class AodvEngine(
                     } else if (c.ttl > 1) { control(c.copy(hops = c.hops + 1, ttl = c.ttl - 1), except = from); log("RREQ forwarded") }
                 }
                 "RREP" -> {
+                    log("event=rrep_received destination=${c.destination} via=$from sequence=${c.sequence}")
                     install(c.destination, from, c.hops + 1, c.sequence)
+                    log("event=rrep_route destination=${c.destination} usable=${route(c.destination) != null}")
                     if (c.origin == id) { pending.values.filter { it.packet.destinationId == c.destination }.forEach { it.retryAt = 0; it.attempt = 0 }; tick() }
                     else route(c.origin)?.let { reverse ->
                         if (reverse.nextHop != from && c.ttl > 1) {

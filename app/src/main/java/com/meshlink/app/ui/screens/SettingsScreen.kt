@@ -5,6 +5,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import com.meshlink.app.ui.components.IdentityAvatar
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -22,23 +24,31 @@ fun SettingsScreen(state: MeshUiState, onBack: () -> Unit, onTheme: (ThemeMode) 
     BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(Modifier.fillMaxWidth(),verticalAlignment = Alignment.CenterVertically,horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Settings",style = MaterialTheme.typography.headlineMedium)
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                IdentityAvatar(state.currentNode.nodeName)
+                Text("Your preferences",style = MaterialTheme.typography.titleMedium)
+            }
             TextButton(onClick = onBack) { Text("Done") }
         }
         OutlinedButton(onClick = onIdentity, modifier = Modifier.fillMaxWidth()) { Text("Edit my profile") }
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Column(Modifier.padding(16.dp).selectableGroup()) {
                 Text("Appearance",style = MaterialTheme.typography.titleLarge)
                 Text("Applies immediately across MeshLink. System Default follows your device.",style = MaterialTheme.typography.bodyMedium)
                 ThemeMode.entries.forEach { mode ->
-                    Row(Modifier.fillMaxWidth().selectable(selected = state.preferences.theme == mode,onClick = { onTheme(mode) },role = Role.RadioButton).padding(vertical = 8.dp),verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).selectable(selected = state.preferences.theme == mode,onClick = { onTheme(mode) },role = Role.RadioButton).padding(vertical = 8.dp),verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(selected = state.preferences.theme == mode,onClick = null)
-                        Spacer(Modifier.width(12.dp)); Text(mode.label)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(mode.label, style = MaterialTheme.typography.titleSmall)
+                            Text(when (mode.label) { "Dark" -> "Charcoal with soft teal accents"; "Light" -> "Warm whites and graphite text"; else -> "Follow your device appearance" },
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
         }
-        Card(Modifier.fillMaxWidth()) {
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(Modifier.padding(16.dp),verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Message notifications",style = MaterialTheme.typography.titleLarge)
                 Row(Modifier.fillMaxWidth(),verticalAlignment = Alignment.CenterVertically) {
@@ -60,7 +70,7 @@ fun SettingsScreen(state: MeshUiState, onBack: () -> Unit, onTheme: (ThemeMode) 
             }
         }
         Text("Advanced",style = MaterialTheme.typography.titleMedium)
-        OutlinedButton({ navigate(com.meshlink.app.presentation.viewmodels.MeshScreenTab.DIAGNOSTICS) }) { Text("Diagnostics") }
-        OutlinedButton({ navigate(com.meshlink.app.presentation.viewmodels.MeshScreenTab.PHYSICAL) }) { Text("Physical BLE Test Configuration") }
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = { navigate(com.meshlink.app.presentation.viewmodels.MeshScreenTab.DIAGNOSTICS) }) { Text("Diagnostics") }
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = { navigate(com.meshlink.app.presentation.viewmodels.MeshScreenTab.PHYSICAL) }) { Text("Physical BLE Test Configuration") }
     }
 }

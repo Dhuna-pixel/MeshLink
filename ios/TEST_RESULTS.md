@@ -1,3 +1,5 @@
+> Historical record: the obsolete Apple-platform source and build projects were removed during the Android-only cleanup. Commands and source paths below describe the earlier implementation.
+
 # MeshLink iOS Test Results & Verification Report
 
 This document records the automated verification, unit test results, and cross-platform wire compatibility checks executed against the **MeshLink iOS** codebase.

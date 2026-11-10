@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 
 /**
  * Transport execution modes supported by MeshLink.
@@ -141,8 +142,140 @@ class MeshRepository(
         return sendGroupEvent(id, "Invited you back to the group", "invite", member, exit)
     }
 
+    private val voicePayloads by lazy { VoicePayloadService(context, identity, journal) }
+    private val voiceTransfer by lazy { com.meshlink.app.domain.voice.VoiceTransfer(
+        java.io.File(context.cacheDir, "voice-network"), repositoryScope,
+        { currentNode.value.nodeId },
+        { id -> identity.peer(id)?.let { identity.participant(id)?.sameKeys(it) } == true },
+        { destination, wire ->
+            val packet = routingEngine.createLocalPacket(IdGenerator.generateMessageId(), currentNode.value.nodeId,
+                currentNode.value.nodeName, destination, "", wire.encode(), 16)
+            log("VOICE", "${wire.transfer} ${wire.kind} index=${wire.index} packet=${packet.messageId}")
+            val voiceEngine = aodv
+            dispatch(packet)
+            try { kotlinx.coroutines.withTimeout(125_000) {
+                while (true) {
+                    val status = deliveryStatuses.value[packet.messageId].orEmpty()
+                    check(!status.startsWith("Failed")) { status }
+                    if (status.startsWith("Delivered")) break
+                    check(aodv === voiceEngine) { "Mesh session changed" }
+                    kotlinx.coroutines.delay(100)
+                }
+            } } finally {
+                voiceEngine?.cancelMessage(packet.messageId,"Failed: voice packet owner finished")
+            }
+        },
+        { payload, completedPacket ->
+            voicePayloads.decrypt(payload, currentNode.value.nodeId).delete()
+            val packet = kotlinx.coroutines.withContext(Dispatchers.IO) { journal.load(currentNode.value.nodeId)
+                .first { it.first.messageId == payload.metadata.transferId && it.first.sourceId == payload.metadata.sourceId }.first }
+            _messages.update { (listOf(packet) + it.filterNot { old -> old.messageId == packet.messageId && old.sourceId == packet.sourceId }).take(500) }
+            unread.value = journal.unread(currentNode.value.nodeId)
+            // Preserve actual END packet route evidence for endpoint notification policy.
+            runCatching { deliveryNotifications.onDelivered(packet.copy(hopCount = completedPacket.hopCount, ttl = completedPacket.ttl, routeHistory = completedPacket.routeHistory)) }
+        },
+        { sender, transfer -> kotlinx.coroutines.withContext(Dispatchers.IO) {
+            journal.voiceReceipt(currentNode.value.nodeId, sender, transfer) != null
+        } }, diagnostic = { log("VOICE",it) }) }
+    val voiceTransferStates get() = voiceTransfer.states
+    /** Production entry point; no UI sending state is fabricated. Caller retains payload ownership. */
+    fun sendVoicePayload(payload: VoicePayloadService.Payload) {
+        require(isNetworkingActive.value)
+        error("Voice notes are retired")
+        repositoryScope.launch {
+            voiceTransfer.states.collect { states ->
+                val state = states[payload.metadata.transferId] ?: return@collect
+                deliveryStatus(payload.metadata.transferId, state)
+                if (state == "Delivered" || state.startsWith("Failed")) {
+                    payload.encryptedFile.delete()
+                    throw kotlinx.coroutines.CancellationException("Voice transfer finished")
+                }
+            }
+        }
+    }
+    private val voiceQueueWake = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+    private val admittedDrafts = linkedSetOf<String>()
+    private val queueAdmission = kotlinx.coroutines.sync.Mutex()
+    private var activeQueuedVoice: String? = null
+    private val canceledVoice = mutableSetOf<String>()
+    suspend fun sendVoiceDraft(draft: java.io.File, recipient: String, durationMs: Long) {
+        check(false) { "Voice notes are retired" }
+        queueAdmission.lock()
+        try {
+            val draftKey="${draft.canonicalPath}:${draft.length()}:${draft.lastModified()}"
+            if (draftKey in admittedDrafts) return
+            val owner=currentNode.value.nodeId
+            val peer=requireNotNull(identity.peer(recipient)) { "Verify this recipient before sending voice." }
+            check(identity.participant(recipient)?.sameKeys(peer) == true) { "Recipient is blocked or identity changed." }
+            val packet=kotlinx.coroutines.withContext(Dispatchers.IO) {
+                require(draft.length() in 1..(95 * 1024).toLong()) { "Recording is empty or too large" }
+                val id=java.util.UUID.randomUUID().toString()
+                val size=draft.length().toInt()
+                val metadata=VoicePayloadMetadata(transferId=id,sourceId=owner,destinationId=recipient,conversationId=recipient,
+                    createdAt=System.currentTimeMillis(),durationMs=durationMs,audioBytes=size,chunkCount=(size+511)/512)
+                MessagePacket(id,owner,currentNode.value.nodeName,recipient,peer.name,"Voice message · ${durationMs/1000}s",
+                    voice=metadata,voiceAudio=draft.readBytes().b64()).also { journal.enqueueVoice(owner,it) }
+            }
+            admittedDrafts.add(draftKey)
+            if(admittedDrafts.size>64) admittedDrafts.remove(admittedDrafts.first())
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                _messages.update { listOf(packet)+it }
+                deliveryStatus(packet.messageId,if(isNetworkingActive.value) "Queued" else "Waiting for mesh")
+                voiceQueueWake.trySend(Unit)
+            }
+        } finally { queueAdmission.unlock() }
+    }
+    fun cancelQueuedVoice(id: String) {
+        canceledVoice.add(id)
+        if(activeQueuedVoice==id) Unit /* legacy voice transfer disabled */
+        repositoryScope.launch {
+            kotlinx.coroutines.withContext(Dispatchers.IO) { journal.finishQueuedVoice(currentNode.value.nodeId,id,"Canceled") }
+            deliveryStatus(id,"Canceled"); voiceQueueWake.trySend(Unit)
+        }
+    }
+    private suspend fun drainVoiceQueue() {
+        while(isNetworkingActive.value && connectedNodes.value.isNotEmpty() && !loadingHistory.value) {
+            val owner=currentNode.value.nodeId
+            val packet=kotlinx.coroutines.withContext(Dispatchers.IO) { journal.queuedVoiceHead(owner) } ?: return
+            if(packet.messageId in canceledVoice) return
+            activeQueuedVoice=packet.messageId
+            var plain: java.io.File?=null
+            var payload: VoicePayloadService.Payload?=null
+            var terminal="Failed: voice preparation failed"
+            try {
+                plain=kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    java.io.File.createTempFile("voice-queue-", ".m4a",context.cacheDir).also { it.writeBytes(requireNotNull(packet.voiceAudio).bytes64()) }
+                }
+                payload=voicePayloads.encrypt(plain!!,owner,packet.destinationId,packet.destinationId,packet.voice!!.durationMs,packet.messageId)
+                check(isNetworkingActive.value && owner==currentNode.value.nodeId) { "Mesh stopped" }
+                if(packet.messageId in canceledVoice) throw kotlinx.coroutines.CancellationException("Canceled")
+                voiceTransfer.send(payload)
+                val observer=repositoryScope.launch {
+                    voiceTransfer.states.collect { states -> states[packet.messageId]?.let { deliveryStatus(packet.messageId,it) } }
+                }
+                try { voiceTransfer.awaitFinished(packet.messageId) } finally { observer.cancel() }
+                terminal=voiceTransfer.states.value[packet.messageId] ?: "Failed: confirmation unavailable"
+            } catch(e: Exception) {
+                log("VOICE", "queue id=${packet.messageId} exception=${e.javaClass.simpleName}")
+            } finally { plain?.delete(); payload?.encryptedFile?.delete(); activeQueuedVoice=null }
+            if(packet.messageId in canceledVoice) terminal="Canceled"
+            else if(terminal != "Delivered" && (!isNetworkingActive.value || connectedNodes.value.isEmpty())) {
+                deliveryStatus(packet.messageId,"Waiting for mesh"); return
+            }
+            kotlinx.coroutines.withContext(Dispatchers.IO) { journal.finishQueuedVoice(owner,packet.messageId,terminal) }
+            deliveryStatus(packet.messageId,terminal)
+        }
+    }
+
+    suspend fun prepareVoicePayload(draft: java.io.File, recipient: String, durationMs: Long): VoicePayloadService.Payload =
+        voicePayloads.encrypt(draft, currentNode.value.nodeId, recipient, recipient, durationMs)
+
     internal fun deliverIncoming(packet: MessagePacket) {
         require(incomingAllowed(packet))
+        if (packet.payload.startsWith(com.meshlink.app.domain.voice.VoiceWire.PREFIX)) {
+            // Retired voice protocol: do not instantiate transfer workers.
+            return
+        }
         acceptGroup(packet)
         val local = currentNode.value.nodeId
         if (!journal.deliverOnce(local, packet)) return
@@ -288,6 +421,8 @@ class MeshRepository(
             }.distinctBy { it.sourceId to it.messageId }
             val outgoing = removed.filter { it.sourceId == owner }.map { it.messageId }.toSet()
             outgoing.forEach { aodv?.cancelMessage(it, "Failed: conversation deleted") }
+            canceledVoice.addAll(outgoing)
+            if(activeQueuedVoice in outgoing) Unit /* legacy voice transfer disabled */
             deletedOutgoingIds.addAll(outgoing)
             historyGeneration++
             _messages.update { it.filterNot(matches) }
@@ -319,11 +454,11 @@ class MeshRepository(
                 unread.value = journal.unread(owner)
                 val restored = saved.mapNotNull { (packet, status) ->
                     if (status == null || packet.sourceId != owner) null else packet.messageId to
-                        if (status.startsWith("Delivered") || status.startsWith("Failed")) status else "Failed: session ended before confirmation"
+                        if (status.startsWith("Delivered") || status.startsWith("Failed") || status == "Canceled") status else if(packet.voice != null) "Waiting for mesh" else "Failed: session ended before confirmation"
                 }.toMap()
                 deliveryStatuses.update { restored + it }
             }.onFailure { storageFailure() }
-            if (generation == historyGeneration) loadingHistory.value = false
+            if (generation == historyGeneration) { loadingHistory.value = false; voiceQueueWake.trySend(Unit) }
         }
     }
 
@@ -334,6 +469,7 @@ class MeshRepository(
     }
 
     init {
+        // Legacy voice queues remain persisted, but are never scheduled.
         restoreHistory(stableId)
         repositoryScope.launch {
             while (true) {
@@ -342,6 +478,17 @@ class MeshRepository(
                     val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
                     if (adapter == null) "Unavailable" else if (adapter.isEnabled) "On" else "Off"
                 } catch (_: SecurityException) { "Permission required" }
+                // Repair missed disconnect delivery from authoritative transport state.
+                val unhealthyPeers = _connectedNodes.value.filterNot { bleTransport.isReadyPeer(it.nodeId,it.endpointId) }
+                unhealthyPeers.forEach { peer ->
+                    aodv?.neighborDown(peer.nodeId)
+                    log("MESH-HEALTH","event=stale_neighbor_removed peer=${peer.nodeId}")
+                }
+                if (unhealthyPeers.isNotEmpty()) {
+                    _connectedNodes.update { nodes -> nodes.filterNot { node -> unhealthyPeers.any { it.nodeId == node.nodeId && it.endpointId == node.endpointId } } }
+                    connectionProblem.value=true
+                    bluetoothStatus.value="Recovering Bluetooth link"
+                }
                 aodv?.tick()
                 routes.value = aodv?.snapshot() ?: emptyList()
                 knownNodes.update { known -> known.filter { node -> _connectedNodes.value.any { it.nodeId == node.nodeId } || System.currentTimeMillis() - node.lastSeenTimestamp < 300_000 } }
@@ -351,9 +498,19 @@ class MeshRepository(
                 }
             }
         }
+        repositoryScope.launch { bleTransport.diagnostics.collect { appendLog(it) } }
         // Collect transport events from all transports in background coroutines
         repositoryScope.launch {
-            bleTransport.events.collect { if (_transportMode.value == TransportMode.BLE_GATT) handleTransportEvent(it) }
+            bleTransport.events.collect { event ->
+                if (_transportMode.value == TransportMode.BLE_GATT) {
+                    try { handleTransportEvent(event) }
+                    catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+                    catch (error: Exception) {
+                        log("MESH-HEALTH","event_handler_failure type=${event.javaClass.simpleName} exception=${error.javaClass.simpleName} at ${error.stackTrace.take(8).joinToString(" <- ")}",LogLevel.ERROR)
+                        connectionProblem.value=true
+                    }
+                }
+            }
         }
 
 
@@ -477,6 +634,8 @@ class MeshRepository(
     fun startNetworking() = startNetworking(_transportMode.value)
 
     @Synchronized fun stopNetworking() {
+        Unit /* legacy voice transfer disabled */
+        aodv?.cancelPending("Failed: networking stopped")
         aodv = null
         routes.value = emptyList()
         activeTransport.stop()
@@ -575,7 +734,20 @@ class MeshRepository(
     fun retryMessage(messageId: String) {
         val owner = currentNode.value.nodeId
         val packet = messages.value.find { it.sourceId == owner && it.messageId == messageId } ?: return
-        if (!isNetworkingActive.value || deliveryStatuses.value[messageId]?.startsWith("Failed") != true) return
+        if (deliveryStatuses.value[messageId]?.startsWith("Failed") != true) return
+        if (packet.voice == null && !isNetworkingActive.value) return
+        if (packet.voice != null) return
+        if (packet.voice != null) {
+            repositoryScope.launch {
+                try {
+                    kotlinx.coroutines.withContext(Dispatchers.IO) { journal.enqueueVoice(owner,packet) }
+                    canceledVoice.remove(messageId)
+                    deliveryStatus(messageId,if(isNetworkingActive.value) "Queued" else "Waiting for mesh")
+                    voiceQueueWake.trySend(Unit)
+                } catch(e: Exception) { deliveryStatus(messageId,"Failed: ${e.message}") }
+            }
+            return
+        }
         // Keep the original journal entry and ID. A new signed attempt needs a fresh validity window.
         dispatch(packet.copy(timestamp = System.currentTimeMillis()))
     }
@@ -760,6 +932,7 @@ class MeshRepository(
     }
 
     fun clearMessages() {
+        activeQueuedVoice?.let { canceledVoice.add(it) }; Unit /* legacy voice transfer disabled */
         historyGeneration++
         runCatching { journal.clear(currentNode.value.nodeId); receivedInbox.clearMessages(currentNode.value.nodeId) }.onFailure { storageFailure(); return }
         _messages.value = emptyList()

@@ -12,6 +12,9 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.meshlink.app.domain.models.MessagePacket
 import com.meshlink.app.presentation.viewmodels.MeshUiState
 import com.meshlink.app.security.GroupChat
+import com.meshlink.app.ui.components.MessageComposer
+import com.meshlink.app.ui.theme.*
+import androidx.compose.animation.animateContentSize
 import com.meshlink.app.ui.components.DestinationPicker
 import com.meshlink.app.ui.components.ParticipantName
 
@@ -65,8 +68,8 @@ fun GroupConversationScreen(state: MeshUiState, edit: (String) -> Unit, send: ()
                 val sender = state.destinations.find { it.id == packet.sourceId }
                 var details by remember(packet.group!!.messageId) { mutableStateOf(false) }
                 Box(Modifier.fillMaxWidth(), contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart) {
-                    Surface(shape = RoundedCornerShape(16.dp), color = if (outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
-                        Column(Modifier.widthIn(max = 320.dp).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Surface(modifier = Modifier.animateContentSize(), shape = messageShape(outgoing), color = if (outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
+                        Column(Modifier.widthIn(max = MeshSpace.bubbleWidth).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             ParticipantName(if (outgoing) "You" else sender?.name ?: packet.sourceName,
                                 !outgoing && sender?.verified == true, MaterialTheme.typography.labelMedium)
                             Text(packet.payload)
@@ -99,11 +102,9 @@ fun GroupConversationScreen(state: MeshUiState, edit: (String) -> Unit, send: ()
                 if (!state.isNetworkingActive) Text("Start mesh networking in Nearby to send.", style = MaterialTheme.typography.bodySmall)
                 val tooLong = state.messageInputText.trim().toByteArray().size > 2000
                 if (tooLong) Text("Message exceeds 2,000 UTF-8 bytes")
-                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(state.messageInputText, edit, label = { Text("Message group") }, modifier = Modifier.weight(1f), maxLines = 4, isError = tooLong)
-                    Spacer(Modifier.width(8.dp))
-                    Button(send, enabled = activeRecipients > 0 && state.isNetworkingActive && state.messageInputText.isNotBlank() && !tooLong) { Text("Send") }
-                }
+                MessageComposer(state.messageInputText, edit, send,
+                    enabled = activeRecipients > 0 && state.isNetworkingActive && state.messageInputText.isNotBlank() && !tooLong,
+                    error = tooLong, label = "Message group")
             }
         }
     }

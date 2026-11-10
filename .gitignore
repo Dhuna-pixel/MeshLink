@@ -28,3 +28,15 @@ xcuserdata/
 # Secrets / local configuration
 .env
 .env.*
+
+# Packaged Android outputs and Kotlin caches
+*.apk
+*.aab
+.kotlin/
+.externalNativeBuild/
+.cxx/
+
+# Local signing material (never remove existing files based on these patterns)
+*.jks
+*.keystore
+key.properties

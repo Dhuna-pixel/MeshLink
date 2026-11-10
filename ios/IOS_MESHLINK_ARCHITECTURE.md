@@ -1,3 +1,5 @@
+> Historical record: the obsolete Apple-platform source and build projects were removed during the Android-only cleanup. Commands and source paths below describe the earlier implementation.
+
 # MeshLink iOS Architecture Specification
 
 This document details the architectural design, domain models, routing engine mechanics, transport layer decoupling, and thread-safety guarantees of the **MeshLink iOS** implementation.

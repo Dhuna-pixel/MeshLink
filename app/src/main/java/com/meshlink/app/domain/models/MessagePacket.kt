@@ -34,6 +34,8 @@ data class MessagePacket(
     val ackFor: String? = null,
     val returnPath: List<String> = emptyList(),
     val senderProfile: String? = null,
+    val voice: com.meshlink.app.security.VoicePayloadMetadata? = null,
+    val voiceAudio: String? = null,
     val group: com.meshlink.app.security.GroupContext? = null
 ) {
     /**

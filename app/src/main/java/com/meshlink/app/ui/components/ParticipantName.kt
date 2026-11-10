@@ -18,6 +18,6 @@ fun ParticipantName(name: String, verified: Boolean, style: TextStyle = LocalTex
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(name, Modifier.weight(1f, fill = false), style = style, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (verified) Icon(Icons.Default.Verified, "Verified contact", Modifier.size(18.dp),
-            tint = if (MaterialTheme.colorScheme.surface.luminance() > 0.5f) Color(0xff006746) else Color(0xff71dfae))
+            tint = MaterialTheme.colorScheme.secondary)
     }
 }

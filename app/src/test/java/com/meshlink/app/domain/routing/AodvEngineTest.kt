@@ -155,4 +155,32 @@ class AodvEngineTest {
         b.receive(p,"A"); val before=n.queue.size; b.receive(p,"A")
         assertEquals(before,n.queue.size); assertEquals("A",b.snapshot().first { it.destination=="A" }.nextHop)
     }
+
+    @Test fun lostReplyThenRediscoveryWithoutRestart() {
+        val n=chain(3)
+        n.nodes.getValue("A").send(MessagePacket("lost-reply","A",destinationId="C",payload="test",routeHistory=listOf("A")))
+        // Drop first discovery; the normal bounded retry must discover again.
+        n.queue.clear(); n.time+=15001; n.nodes.getValue("A").tick(); n.flush()
+        assertEquals("Delivered (destination ACK)",n.statuses["lost-reply"])
+        n.send("C",id="text-after-recovery")
+        assertEquals("Delivered (destination ACK)",n.statuses["text-after-recovery"])
+    }
+    @Test fun canceledOwnerReleasesPendingSlotAndTextStillDelivers() {
+        val n=chain(2)
+        n.nodes.getValue("A").send(MessagePacket("voice-owned","A",destinationId="B",payload="test",routeHistory=listOf("A")))
+        n.nodes.getValue("A").cancelMessage("voice-owned","Failed: owner canceled")
+        n.queue.clear()
+        n.send("B",id="text-after-cancel")
+        assertEquals("Delivered (destination ACK)",n.statuses["text-after-cancel"])
+    }
+    @Test fun repeatedDisconnectReconnectInvalidatesAndRediscovers() {
+        val n=chain(3)
+        repeat(5) { index ->
+            n.send("C",id="before-$index")
+            n.unlink("B","C"); n.flush()
+            n.link("B","C"); n.time+=16001
+            n.send("C",id="after-$index")
+            assertEquals("Delivered (destination ACK)",n.statuses["after-$index"])
+        }
+    }
 }

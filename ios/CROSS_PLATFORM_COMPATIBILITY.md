@@ -1,3 +1,5 @@
+> Historical record: the obsolete Apple-platform source and build projects were removed during the Android-only cleanup. Commands and source paths below describe the earlier implementation.
+
 # MeshLink Cross-Platform Compatibility Guide
 
 This document specifies the wire compatibility, serialization standards, transport requirements, and real-world interoperability matrix between **Android MeshLink** and **iOS MeshLink**.

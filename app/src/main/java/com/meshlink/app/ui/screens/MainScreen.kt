@@ -35,7 +35,7 @@ fun MainScreen(viewModel: MeshViewModel, onToggleNetworking: () -> Unit, onNotif
     val contact = state.destinations.find { it.id == state.peerId }
     val history = remember(state.messages, state.currentNode.nodeId) { conversations(state.currentNode.nodeId, state.messages) }
     val title = when (tab) {
-        CHATS -> "Chats"
+        CHATS -> "MeshLink"
         NEARBY -> "Nearby"
         SETTINGS -> "Settings"
         CONVERSATION -> contact?.name ?: history[state.peerId]?.lastOrNull()?.peerName(state.currentNode.nodeId) ?: state.peerId
@@ -57,9 +57,9 @@ fun MainScreen(viewModel: MeshViewModel, onToggleNetworking: () -> Unit, onNotif
         else -> "Mesh off"
     }
     Scaffold(topBar = {
-        TopAppBar(title = { Column {
-            ParticipantName(title, tab == CONVERSATION && contact?.verified == true)
-            Text(status, style = MaterialTheme.typography.labelMedium)
+        TopAppBar(colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background), title = { Column {
+            ParticipantName(title, tab == CONVERSATION && contact?.verified == true, MaterialTheme.typography.titleLarge)
+            MeshStatus(status, state.isNetworkingActive, state.connectionProblem)
         } }, navigationIcon = {
             if (tab !in tabs) IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
         }, actions = {
@@ -74,7 +74,7 @@ fun MainScreen(viewModel: MeshViewModel, onToggleNetworking: () -> Unit, onNotif
             }
         })
     }, bottomBar = {
-        if (tab in tabs) NavigationBar {
+        if (tab in tabs) NavigationBar(containerColor = MaterialTheme.colorScheme.background, tonalElevation = 0.dp) {
             tabs.forEach { item ->
                 val (label, icon) = when (item) {
                     CHATS -> "Chats" to Icons.AutoMirrored.Filled.Chat
@@ -85,7 +85,8 @@ fun MainScreen(viewModel: MeshViewModel, onToggleNetworking: () -> Unit, onNotif
             }
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
+        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding(), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
+        Column(Modifier.widthIn(max = com.meshlink.app.ui.theme.MeshSpace.contentWidth).fillMaxSize()) {
             if (state.connectionProblem && tab == NEARBY) Text("Check Bluetooth and nearby device permissions, then restart the mesh.", Modifier.padding(12.dp))
             if (state.startupMessage.isNotBlank()) Text(state.startupMessage, Modifier.padding(12.dp))
             when (tab) {
@@ -106,16 +107,25 @@ fun MainScreen(viewModel: MeshViewModel, onToggleNetworking: () -> Unit, onNotif
                 PAIRING -> LazyColumn { item { PairingPanel(viewModel.identity,state.currentNode.nodeId,state.currentNode.nodeName,state.isNetworkingActive) } }
                 EVENTS -> LogScreen(state, viewModel::setLogFilter, viewModel::clearLogs)
                 DIAGNOSTICS -> LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item { Text("Bluetooth · ${state.bluetoothStatus}\nDirect neighbors · ${state.connectedNodes.size}") }
+                    item {
+                        Text("Mesh health", style = MaterialTheme.typography.headlineSmall)
+                        Spacer(Modifier.height(8.dp))
+                        Text(state.bluetoothStatus, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${state.connectedNodes.size} direct neighbors", style = MaterialTheme.typography.labelLarge)
+                    }
                     item { TextButton({ viewModel.selectTab(EVENTS) }) { Text("Network events") } }
                     item { Text("Routing table", style = MaterialTheme.typography.titleMedium) }
                     if (state.routes.isEmpty()) item { Text("No routes recorded") }
-                    items(state.routes) { Text("${it.destination} via ${it.nextHop} · ${it.hops} hops") }
+                    items(state.routes) { route ->
+                        ListItem(headlineContent = { Text(route.destination, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium) },
+                            supportingContent = { Text("via ${route.nextHop} · ${route.hops} hops", style = MaterialTheme.typography.bodySmall) })
+                    }
                     item { Text("Message details", style = MaterialTheme.typography.titleMedium) }
                     items(state.messages) { TextButton({ viewModel.inspectPacket(it) }) { Text(it.messageId) } }
                 }
             }
         }
+    }
     }
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false },
         title = { Text(if (tab == GROUP) "Delete group chat?" else "Delete conversation?") },

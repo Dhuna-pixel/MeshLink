@@ -1,7 +1,17 @@
 package com.meshlink.app.ui.screens
 
-import com.meshlink.app.ui.components.ParticipantName
+import com.meshlink.app.ui.components.*
+import com.meshlink.app.ui.theme.*
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import java.util.Calendar
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,52 +43,66 @@ internal fun deliveryLabel(status: String?) = when {
     status.startsWith("Next-hop") -> "Sent to next hop"
     status == "Discovering route" -> status
     status == "Queued" -> status
+    status == "Canceled" -> status
     else -> "Sending"
 }
 
 internal fun stamp(time: Long): String = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(time))
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChatsScreen(state: MeshUiState, history: Map<String,List<MessagePacket>>, open: (String) -> Unit, newChat: () -> Unit, newGroup: () -> Unit = {}, openGroup: (String) -> Unit = {}) {
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(contentPadding = PaddingValues(vertical = MeshSpace.medium)) {
+        item { FlowRow(Modifier.padding(horizontal = MeshSpace.medium), horizontalArrangement = Arrangement.spacedBy(MeshSpace.small)) {
             FilledTonalButton(newChat) { Text("New conversation") }
-            OutlinedButton(newGroup) { Text("New group") }
+            TextButton(newGroup) { Text("New group") }
         } }
         items(state.groups.filterNot { it.id in state.hiddenGroups }.sortedByDescending { group -> state.messages.firstOrNull { it.group?.chat?.id == group.id }?.timestamp ?: 0 }, key = { "group-" + it.id }) { group ->
             val messages = state.messages.filter { it.group?.chat?.id == group.id }
             val latest = messages.maxByOrNull { it.timestamp }
-            val unread = messages.count { it.sourceId to it.messageId in state.unread }
-            ListItem(modifier = Modifier.clickable { openGroup(group.id) },
-                headlineContent = { Text(group.name) },
-                overlineContent = { Text(if (group.id in state.leftGroups) "Group · You left" else "Group · ${group.members.size} members") },
-                supportingContent = { Text(latest?.payload ?: "No messages yet", maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                trailingContent = { if (unread > 0) Text("$unread unread") })
-            HorizontalDivider()
+            ConversationRow(group.name, false, latest?.let { if (it.voice != null) "Voice message" else it.payload } ?: "No messages yet",
+                latest?.timestamp, messages.count { it.sourceId to it.messageId in state.unread },
+                if (group.id in state.leftGroups) "Group · You left" else "Group · ${group.members.size} members", true) { openGroup(group.id) }
         }
-        if (state.notificationTapMessage.isNotEmpty()) item { Text(state.notificationTapMessage) }
+        if (state.notificationTapMessage.isNotEmpty()) item { Text(state.notificationTapMessage, Modifier.padding(MeshSpace.medium)) }
         if (history.isEmpty() && state.groups.none { it.id !in state.hiddenGroups }) item {
-            if (state.loadingHistory) LinearProgressIndicator() else Column(Modifier.padding(vertical = 32.dp)) {
-                Text("No conversations yet", style = MaterialTheme.typography.headlineSmall)
-                Text("Discover nearby devices to start chatting.")
-            }
+            if (state.loadingHistory) LinearProgressIndicator(Modifier.fillMaxWidth().padding(MeshSpace.medium))
+            else EmptyConversation("No conversations yet", "Discover nearby devices to start chatting. Your conversations will appear here.")
         }
         items(history.entries.sortedByDescending { it.value.last().timestamp }, key = { it.key }) { (peer, messages) ->
             val latest = messages.last()
-            val outgoing = latest.sourceId == state.currentNode.nodeId
-            val unread = messages.count { it.sourceId to it.messageId in state.unread }
-            ListItem(modifier = Modifier.clickable { open(peer) },
-                headlineContent = { val contact = state.destinations.find { it.id == peer }
-                    ParticipantName(contact?.name ?: latest.peerName(state.currentNode.nodeId), contact?.verified == true) },
-                supportingContent = { Text(latest.payload, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                overlineContent = { Text(stamp(latest.timestamp)) },
-                trailingContent = { Column {
-                    if (unread > 0) Text("$unread unread")
-                    if (outgoing) Text(deliveryLabel(state.deliveryStatuses[latest.messageId]))
-                } })
-            HorizontalDivider()
+            val contact = state.destinations.find { it.id == peer }
+            ConversationRow(contact?.name ?: latest.peerName(state.currentNode.nodeId), contact?.verified == true,
+                if (latest.voice != null) "Voice message" else latest.payload, latest.timestamp,
+                messages.count { it.sourceId to it.messageId in state.unread },
+                if (latest.sourceId == state.currentNode.nodeId) deliveryLabel(state.deliveryStatuses[latest.messageId]) else null) { open(peer) }
         }
     }
+}
+
+@Composable
+private fun ConversationRow(name: String, verified: Boolean, preview: String, timestamp: Long?, unread: Int,
+    metadata: String?, group: Boolean = false, open: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = open).padding(MeshSpace.medium),
+        horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+        IdentityAvatar(name, group)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(MeshSpace.xs)) {
+            ParticipantName(name, verified, MaterialTheme.typography.titleMedium)
+            Text(preview, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            metadata?.let { DeliveryStatus(it) }
+        }
+        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(MeshSpace.small)) {
+            timestamp?.let { Text((if (dayKey(it) == dayKey(System.currentTimeMillis())) DateFormat.getTimeInstance(DateFormat.SHORT) else DateFormat.getDateInstance(DateFormat.SHORT)).format(Date(it)),
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (unread > 0) Badge(Modifier.semantics { contentDescription = "$unread unread messages" }) { Text("$unread", modifier = Modifier.padding(horizontal = MeshSpace.xs)) }
+        }
+    }
+    HorizontalDivider(Modifier.padding(start = 76.dp, end = MeshSpace.medium), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+}
+
+private fun dayKey(time: Long): Triple<Int, Int, Int> = Calendar.getInstance().apply { timeInMillis = time }.let {
+    Triple(it.get(Calendar.YEAR), it.get(Calendar.MONTH), it.get(Calendar.DAY_OF_MONTH))
 }
 
 @Composable
@@ -98,28 +122,43 @@ fun ConversationScreen(state: MeshUiState, messages: List<MessagePacket>, edit: 
             }
         }
         LaunchedEffect(state.peerId, displayed.lastOrNull()?.messageId) {
-            if (displayed.isNotEmpty() && (list.firstVisibleItemIndex < 2 || displayed.last().sourceId == state.currentNode.nodeId)) list.scrollToItem(0)
+            if (displayed.isNotEmpty() && (list.firstVisibleItemIndex < 2 || displayed.last().sourceId == state.currentNode.nodeId)) list.animateScrollToItem(0)
         }
-        if (displayed.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Start the conversation") }
+        if (displayed.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { EmptyConversation("Start the conversation", "Type a message or use offline speech input. Messages travel through the nearby mesh.", Modifier.verticalScroll(rememberScrollState())) }
         else LazyColumn(Modifier.weight(1f), state = list, reverseLayout = true, contentPadding = PaddingValues(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(displayed.asReversed(), key = { "${it.sourceId.length}:${it.sourceId}${it.messageId}" }) { packet ->
+            itemsIndexed(displayed.asReversed(), key = { _, packet -> "${packet.sourceId.length}:${packet.sourceId}${packet.messageId}" }) { index, packet ->
+                val previous = displayed.getOrNull(displayed.lastIndex - index - 1)
+                var entered by remember(packet.messageId) { mutableStateOf(index != 0) }
+                LaunchedEffect(packet.messageId) { entered = true }
+                AnimatedVisibility(visible = entered, enter = fadeIn() + slideInVertically { it / 8 }) {
+                Column {
+                if (previous == null || dayKey(previous.timestamp) != dayKey(packet.timestamp)) {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                        Text(DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(packet.timestamp)),
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 val outgoing = packet.sourceId == state.currentNode.nodeId
                 val status = deliveryLabel(state.deliveryStatuses[packet.messageId])
-                Box(Modifier.fillMaxWidth(), contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart) {
-                    Surface(shape = RoundedCornerShape(16.dp), color = if (outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
-                        Column(Modifier.widthIn(max = 300.dp).padding(12.dp)) {
+                BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart) {
+                    Surface(modifier = Modifier.widthIn(max = minOf(maxWidth * 0.88f, MeshSpace.bubbleWidth)).animateContentSize(), shape = messageShape(outgoing), color = if (outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             val sender = state.destinations.find { it.id == packet.sourceId }
                             ParticipantName(if (outgoing) "You" else sender?.name ?: packet.sourceName.ifBlank { packet.sourceId },
                                 !outgoing && sender?.verified == true, MaterialTheme.typography.labelMedium)
-                            Text(packet.payload)
-                            Text(stamp(packet.timestamp) + if (outgoing) " · $status" else "", style = MaterialTheme.typography.labelSmall)
-                            if (outgoing && status == "Failed") {
+                            if (packet.voice != null) Text("Historical voice message · audio retained")
+                            else Text(packet.payload)
+                            Text(DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(packet.timestamp)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (outgoing && packet.voice == null) DeliveryStatus(status)
+                            if (outgoing && packet.voice == null && status == "Failed") {
                                 Text(state.deliveryStatuses[packet.messageId]?.removePrefix("Failed: ") ?: "Delivery unconfirmed", style = MaterialTheme.typography.bodySmall)
-                                TextButton({ retry(packet) }, enabled = canSend && state.isNetworkingActive) { Text("Retry") }
+                                TextButton({ retry(packet) }, enabled = canSend && (packet.voice != null || state.isNetworkingActive)) { Text("Retry") }
                             }
                         }
                     }
+                }
+                }
                 }
             }
         }
@@ -133,11 +172,10 @@ fun ConversationScreen(state: MeshUiState, messages: List<MessagePacket>, edit: 
             else -> null
         }
         hint?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(state.messageInputText, edit, modifier = Modifier.weight(1f), maxLines = 4,
-                label = { Text("Message") }, isError = tooLong)
-            Spacer(Modifier.width(8.dp))
-            Button(send, enabled = canSend && state.isNetworkingActive && state.messageInputText.isNotBlank() && !tooLong) { Text("Send") }
+        key(state.peerId, state.selectedTab) {
+        MessageComposer(state.messageInputText, edit, send,
+            enabled = canSend && state.isNetworkingActive && state.messageInputText.isNotBlank() && !tooLong,
+            error = tooLong)
         }
     }
 }

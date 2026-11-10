@@ -52,128 +52,39 @@ fun LogScreen(
     onFilterChanged: (LogLevel?) -> Unit,
     onClearLogs: () -> Unit
 ) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val filteredLogs = if (uiState.logFilterLevel == null) {
         uiState.networkLogs
     } else {
         uiState.networkLogs.filter { it.level == uiState.logFilterLevel }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MeshBackground)
-            .padding(16.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    text = "Live Engineering Event Log",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = TextPrimary
-                )
-                Text(
-                    text = "Chronological routing & multi-hop trace",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
-                )
+    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        androidx.compose.material3.FilledTonalButton(modifier = Modifier.fillMaxWidth(), onClick = {
+            val safeTags=setOf("VOICE","AODV","BLE-HEALTH","MESH-HEALTH","BLE-WRITE","BLE-QUEUE","BLE-WORKER","FRAGMENT")
+            val text=uiState.networkLogs.filter { it.tag in safeTags }.take(100).reversed()
+                .joinToString("\n") { "${it.timestamp} ${it.tag} ${it.message}" }
+            clipboard.setText(androidx.compose.ui.text.AnnotatedString(text))
+        }) { Text("Copy transport diagnostics") }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Event stream", style = MaterialTheme.typography.titleLarge)
+                Text("Routing, connections and transfers", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
             }
-
-            IconButton(onClick = onClearLogs) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Clear Logs",
-                    tint = TextSecondary
-                )
+            IconButton(onClick = onClearLogs) { Icon(Icons.Default.Delete, "Clear Logs", tint = TextSecondary) }
+        }
+        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { FilterChip(selected = uiState.logFilterLevel == null, onClick = { onFilterChanged(null) }, label = { Text("All (${uiState.networkLogs.size})") }) }
+            items(LogLevel.entries.toList()) { level ->
+                FilterChip(selected = uiState.logFilterLevel == level,
+                    onClick = { onFilterChanged(if (uiState.logFilterLevel == level) null else level) },
+                    label = { Text(level.name.lowercase().replaceFirstChar { it.uppercase() }) })
             }
         }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Filter chips
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            FilterChip(
-                selected = uiState.logFilterLevel == null,
-                onClick = { onFilterChanged(null) },
-                label = { Text("ALL (${uiState.networkLogs.size})", fontSize = 11.sp) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MeshCyanPrimary,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                    containerColor = MeshSurfaceVariant,
-                    labelColor = TextPrimary
-                )
-            )
-            FilterChip(
-                selected = uiState.logFilterLevel == LogLevel.SUCCESS,
-                onClick = { onFilterChanged(if (uiState.logFilterLevel == LogLevel.SUCCESS) null else LogLevel.SUCCESS) },
-                label = { Text("SUCCESS", fontSize = 11.sp) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MeshGreenAccent,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                    containerColor = MeshSurfaceVariant,
-                    labelColor = MeshGreenAccent
-                )
-            )
-            FilterChip(
-                selected = uiState.logFilterLevel == LogLevel.INFO,
-                onClick = { onFilterChanged(if (uiState.logFilterLevel == LogLevel.INFO) null else LogLevel.INFO) },
-                label = { Text("INFO", fontSize = 11.sp) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MeshCyanPrimary,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                    containerColor = MeshSurfaceVariant,
-                    labelColor = MeshCyanPrimary
-                )
-            )
-            FilterChip(
-                selected = uiState.logFilterLevel == LogLevel.WARNING,
-                onClick = { onFilterChanged(if (uiState.logFilterLevel == LogLevel.WARNING) null else LogLevel.WARNING) },
-                label = { Text("WARN", fontSize = 11.sp) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MeshAmberWarning,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                    containerColor = MeshSurfaceVariant,
-                    labelColor = MeshAmberWarning
-                )
-            )
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Terminal Log Console
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(CodeLogBackground, RoundedCornerShape(12.dp))
-                .padding(8.dp)
-        ) {
-            if (filteredLogs.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "No log events matching filter.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items(filteredLogs) { logEntry ->
-                        LogEntryItem(logEntry)
-                    }
-                }
-            }
+        if (filteredLogs.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text("No log events matching filter.", color = TextSecondary)
+        } else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(filteredLogs) { LogEntryItem(it) }
         }
     }
 }
@@ -198,7 +109,7 @@ private fun LogEntryItem(entry: NetworkLogEntry) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 LogLevelBadge(level = entry.level)
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
@@ -206,14 +117,14 @@ private fun LogEntryItem(entry: NetworkLogEntry) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MeshCyanPrimary,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp
+                    fontSize = 12.sp
                 )
             }
             Text(
                 text = entry.getFormattedTime(),
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
-                fontSize = 10.sp,
+                fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace
             )
         }
@@ -225,7 +136,7 @@ private fun LogEntryItem(entry: NetworkLogEntry) {
             color = messageColor,
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
-            lineHeight = 16.sp
+            lineHeight = 20.sp
         )
 
         entry.packetSummary?.let { summary ->
@@ -233,7 +144,7 @@ private fun LogEntryItem(entry: NetworkLogEntry) {
             Text(
                 text = summary,
                 color = TextSecondary,
-                fontSize = 10.sp,
+                fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace
             )
         }
