@@ -1,13 +1,24 @@
 # MeshLink
 
-MeshLink is an Android Kotlin project for encrypted text messaging across nearby devices without internet infrastructure. It combines Jetpack Compose, Bluetooth Low Energy (BLE), and AODV routing to explore practical offline mesh communication.
+MeshLink is an Android Kotlin application for private messaging between nearby devices without internet infrastructure. Built with Kotlin and Jetpack Compose, it uses Bluetooth Low Energy (BLE) for direct links and AODV routing to forward messages through other participating phones.
+
+## Features
+
+- **Offline one-to-one and group chats:** Send encrypted text over direct BLE links or multi-hop routes. Messages show delivery status based on acknowledgments from their destination.
+- **End-to-end and link security:** Encrypt message contents between participants, authenticate neighboring connections, and let users compare identity fingerprints.
+- **Nearby discovery and mesh diagnostics:** Discover peers, inspect routes and network activity, and keep mesh networking active with a foreground service.
+- **Participant profiles:** Edit your own profile and open a contact's profile from the conversation header to view their available details and identity fingerprint.
+- **Delete for me:** Long-press a message to remove it from your own chat history. The choice is stored locally and suppresses the message if history is loaded again; it does not send a deletion to other participants.
+- **Offline speech input:** Dictate message text with Android's on-device speech recognizer, review it, and send it as an ordinary encrypted message.
+- **Encrypted local history:** Keep chat history on the device in encrypted storage.
 
 ## What it does
 
 - Discovers nearby BLE peers and forwards messages over multiple hops.
 - Authenticates direct links with TLS and encrypts text end to end.
 - Tracks destination acknowledgments, bounded retries, and delivery failures.
-- Supports personal and group conversations, participant profiles, and a persistent encrypted message journal.
+- Supports personal and group conversations, participant profiles, and a persistent encrypted message journal. Contact profiles open from conversation headers.
+- Lets users delete an individual message for themselves, with the local deletion persisted across app restarts and history reloads. No deletion command is sent to other devices.
 - Offers strictly on-device speech-to-text and a teal audio-reactive waveform.
 - Provides connection/routing diagnostics and a foreground mesh service.
 
